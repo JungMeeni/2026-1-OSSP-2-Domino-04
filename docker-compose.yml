@@ -1,14 +1,25 @@
+# services:
+#   app:
+#     # 24.14.1 버전 사용
+#     image: node:24-slim
+#     # 현재 폴더(로컬)와 컨테이너 내부의 /app 폴더를 연결
+#     volumes:
+#       - .:/app
+#     # 작업 디렉토리를 /app으로 설정
+#     working_dir: /app
+#     # 컨테이너가 즉시 종료되지 않도록 설정
+#     command: tail -f /dev/null
+#     # Express 서버에서 사용할 포트 연결
+#     ports:
+#       - "3000:3000"
+
 services:
-  app:
-    # 24.14.1 버전 사용
-    image: node:24-slim
-    # 현재 폴더(로컬)와 컨테이너 내부의 /app 폴더를 연결
-    volumes:
-      - .:/app
-    # 작업 디렉토리를 /app으로 설정
-    working_dir: /app
-    # 컨테이너가 즉시 종료되지 않도록 설정
-    command: tail -f /dev/null
-    # Express 서버에서 사용할 포트 연결
+  api-server:
+    build: .
     ports:
       - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development

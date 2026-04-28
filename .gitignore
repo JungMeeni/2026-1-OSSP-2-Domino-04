@@ -1,2 +1,13 @@
+# 의존성 및 환경 변수
 node_modules/
 .env
+
+# 보안 관련 (Firebase)
+firebase-adminsdk.json
+
+*.json
+!package.json
+!package-lock.json
+
+
+
