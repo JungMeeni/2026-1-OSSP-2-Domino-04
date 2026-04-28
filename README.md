@@ -20,7 +20,7 @@
   └── develop (Dev)   : 모든 파트 코드가 합쳐지는 중심축 (Default)
        ├── frontend   : 프론트엔드 작업 통합 브랜치
        │    ├── feat/front-taehyeon
-       │    └── feat/front-hyeojun
+       │    └── feat/front-hyojun
        └── backend    : 백엔드 작업 통합 브랜치
             ├── feat/back-deokwon
             └── feat/back-jeongmin
