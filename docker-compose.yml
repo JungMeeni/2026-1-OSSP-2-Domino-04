@@ -6,6 +6,7 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      - ./src/services/config/firebase-admin-key.json:/app/src/services/config/firebase-admin-key.json
     env_file:
       - .env # .env 파일에서 환경 변수 불러오기
     environment:

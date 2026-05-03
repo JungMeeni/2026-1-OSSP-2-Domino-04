@@ -1,105 +1,47 @@
-//dotenv 설정
-require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
-
-
 const express = require('express');
-const mapRouter = require('./routes/map');// 라우터 모듈 불러오기
+const dotenv = require('dotenv');
+const path = require('path');
+
+// 보안 관련 패키지 로드
+const helmet = require('helmet');
+const cors = require('cors');
+
+// 환경변수 로드 (실행 위치에 구애받지 않도록 절대 경로 명시)
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
 const app = express();
 
-app.use(express.json());
-//실제 주소는 http://localhost:3000/api/search
-app.use('/api', mapRouter); // 모든 경로에 /api 접두사 부여
+// 1. 공통 및 보안 미들웨어 설정
+app.use(helmet()); // HTTP 헤더 보안 취약점 방어
+app.use(cors());   // 클라이언트 도메인 접근 허용
+app.use(express.json()); // JSON Payload 파싱
+app.use(express.urlencoded({ extended: true })); // URL-encoded Payload 파싱
 
-app.listen(3000, '0.0.0.0', () => {
-    console.log('🚀 서버가 3000번 포트에서 요청을 기다리고 있습니다!');
+// 2. 라우터 모듈 분리 및 로드
+const authRoutes = require('./routes/auth');
+const mapRoutes = require('./routes/map');
+const mediaRoutes = require('./routes/media');
+
+// 3. 엔드포인트별 라우터 매핑 (계층화)
+app.use('/api/auth', authRoutes);
+app.use('/api/map', mapRoutes);
+app.use('/api/media', mediaRoutes);
+
+// 4. 전역 에러 핸들링 미들웨어 (반드시 라우터 매핑 하단에 위치)
+app.use((err, req, res, next) => {
+    // 서버 내부 로깅용 에러 스택 출력
+    console.error(err.stack); 
+    // 클라이언트에게는 보안상 추상화된 메시지만 응답
+    res.status(500).json({ success: false, message: '서버 내부 오류가 발생했습니다.' });
 });
 
-// 간단한 핑 테스트 엔드포인트
-app.get('/ping', (req, res) => {
-    res.send('pong');
-});
-//이하 이전 코드.
-// require('dotenv').config();//kakao rest api key를 .env 파일에서 불러오기 위해 dotenv 패키지 사용
-// const express = require('express');
-// const admin = require('firebase-admin');
-// const cors = require('cors'); // 추가됨
-// const axios = require('axios'); // 추가됨
-// const serviceAccount = require('../firebase-adminsdk.json');
-
-// const app = express();
-// const port = 3000;
-
-// app.use(cors());
-// app.use(express.json());
-
-// // Firebase Admin SDK 초기화
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount)
-// });
-
-// const db = admin.firestore();
-
-// //1. 로깅 미들웨어 (모든 요청 로그 기록)
-// app.use((req, res, next) => {
-//   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Request Received`);
-//   next();
-// });
-
-// // 2. 통합된 루트 경로 (JSON 응답)
-// app.get('/', (req, res) => {
-//   res.status(200).json({
-//     status: "success",
-//     message: "Firebase 및 Firestore가 연결된 API 서버가 Docker에서 작동 중입니다.",
-//     timestamp: new Date().toISOString()
-//   });
-// });
-
-// // 3. Firestore 데이터 저장 테스트 경로
-// app.get('/test-db', async (req, res) => {
-//   try {
-//     const testDoc = db.collection('test_collection').doc('test_doc');
-//     await testDoc.set({
-//       message: "Firestore 데이터 저장 성공!",
-//       timestamp: new Date(),
-//       status: "Active"
-//     });
-//     res.send('✅ 성공적으로 Firestore에 데이터를 기록했습니다! Firebase 콘솔을 확인하세요.');
-//   } catch (error) {
-//     console.error("❌ DB 에러:", error);
-//     res.status(500).send('❌ DB 기록 실패: ' + error.message);
-//   }
-// });
-// // 4. 카카오맵 장소 검색 엔드포인트
-// app.get('/api/search', async (req, res) => {
-//   const { query } = req.query;
-//   const KAKAO_KEY = process.env.KAKAO_REST_API_KEY;
-
-//   if (!query) {
-//     return res.status(400).json({ status: "error", message: "검색어를 입력하세요(?query=검색어)" });
-//   }
-
-//   try {
-//     const response = await axios.get('https://dapi.kakao.com/v2/local/search/keyword.json', {
-//       params: { query: query },
-//       headers: { 'Authorization': `KakaoAK ${KAKAO_KEY}` }
-//     });
-
-//     const places = response.data.documents.map(place => ({
-//       name: place.place_name,
-//       address: place.address_name,
-//       x: place.x,
-//       y: place.y
-//     }));
-
-//     res.json({ status: "success", count: places.length, data: places });
-//   } catch (error) {
-//     console.error("❌ 카카오 API 에러:", error.message);
-//     res.status(500).json({ status: "error", message: "카카오 API 호출에 실패했습니다." });
-//   }
-// });
-
-
-// app.listen(port, '0.0.0.0', () => {
-//   console.log(`🚀 서버가 실행 중입니다: http://localhost:${port}`);
-//   console.log("🔥 Firebase 및 Kakao API 환경 준비 완료");
-// });
+// 5. 서버 실행 제어
+const PORT = process.env.PORT || 3000;
+// 직접 실행(node app.js)될 때만 서버를 구동하고, 모듈로 import 될 때는 구동하지 않음
+if (require.main === module) {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server is running on port ${PORT}`);
+    });
+}
+app.get('/', (req, res) => res.send('API Server is Running!'));
+module.exports = app;
