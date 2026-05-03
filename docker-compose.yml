@@ -1,4 +1,19 @@
 services:
+
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      # .env 파일에 정의된 변수를 사용하거나 직접 적어주세요
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD} 
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql_data:/var/lib/mysql  # 데이터가 사라지지 않게 내 컴퓨터에 저장
+      
   api-server:
     build: .
     ports:
@@ -11,3 +26,6 @@ services:
       - .env # .env 파일에서 환경 변수 불러오기
     environment:
       - NODE_ENV=development
+      - DB_HOST=db
+    depends_on:
+      - db
