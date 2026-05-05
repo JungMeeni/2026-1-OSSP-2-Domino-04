@@ -1,0 +1,10 @@
+{
+  "development": {
+    "username": "root",
+    "password": "1234",
+    "database": "domino_db",
+    "host": "db", 
+    "port": 3306,
+    "dialect": "mysql"
+  }
+}

@@ -17,4 +17,4 @@ COPY . .
 
 # 6. FastAPI 서버 실행
 # 개발 환경이므로 코드 수정 시 자동 재시작되도록 --reload 옵션을 넣었습니다.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

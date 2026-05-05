@@ -1,14 +1,9 @@
-# 의존성 및 환경 변수
-node_modules/
+# --- 공통 및 보안 ---
 .env
-
-# 보안 관련 (Firebase)
-firebase-adminsdk.json
-
-*.json
-!package.json
-!package-lock.json
-
+.env.*
 mysql_data/
-*command.md
+.vscode/
 
+# --- Mac/Windows 시스템 파일 ---
+.DS_Store
+Thumbs.db
