@@ -14,6 +14,16 @@ const TripAdvisorService = require('../services/TripAdvisor_Service');
 */
 
 router.get('/search', async (req, res) => {
+    /* #swagger.summary = '키워드 장소 검색 (카카오)'
+    #swagger.description = '사용자가 입력한 검색어(query)를 바탕으로 카카오 맵 API를 통해 장소 리스트를 반환합니다.'
+    #swagger.parameters['query'] = {
+        in: 'query',
+        description: '검색하고자 하는 장소명 또는 키워드',
+        required: true,
+        type: 'string',
+        example: '강남역'
+    }
+    */
     try {
         const query = req.query.query; // 브라우저에서 보낸 ?query=강남역 추출
         if (!query) return res.status(400).send('검색어를 입력하세요.');
@@ -27,6 +37,23 @@ router.get('/search', async (req, res) => {
 
 // 외국인 관광객 맞춤형 장소 탐색 API 라우트
 router.get('/search-places', async (req, res) => {
+    /* #swagger.summary = '외국인 관광객 맞춤형 장소 탐색 (TripAdvisor 연동)'
+    #swagger.description = '키워드로 장소를 검색하고, 상위 5개 장소에 대해 트립어드바이저 평점과 리뷰 수를 합쳐서 반환합니다.'
+    #swagger.parameters['keyword'] = {
+        in: 'query',
+        description: '장소 검색 키워드',
+        required: true,
+        type: 'string',
+        example: 'Gyeongbokgung'
+    }
+    #swagger.parameters['targetLang'] = {
+        in: 'query',
+        description: '응답받을 언어 코드 (ko, en, ja 등)',
+        required: false,
+        type: 'string',
+        example: 'en'
+    }
+    */
     // 1. 요청이 제대로 들어왔는지 확인하는 로그 (추가)
     try {
         const { keyword, targetLang } = req.query;
@@ -75,7 +102,35 @@ router.get('/search-places', async (req, res) => {
 
 router.get('/recommend', async (req, res) => {
     /* #swagger.summary = '좌표 기반 카테고리별 장소 추천'
-    #swagger.description = '위도, 경도와 원하는 카테고리들을 받아 주변 장소 데이터를 반환합니다.'
+    #swagger.description = '사용자의 현재 위치(위도, 경도)를 기준으로 주변의 특정 카테고리 장소들을 추천합니다.'
+    #swagger.parameters['lat'] = {
+        in: 'query',
+        description: '현재 위도 (Latitude)',
+        required: true,
+        type: 'number',
+        example: 37.5665
+    }
+    #swagger.parameters['lng'] = {
+        in: 'query',
+        description: '현재 경도 (Longitude)',
+        required: true,
+        type: 'number',
+        example: 126.9780
+    }
+    #swagger.parameters['categories'] = {
+        in: 'query',
+        description: '검색할 카테고리 코드 (콤마로 구분). CE7: 카페, FD6: 음식점',
+        required: false,
+        type: 'string',
+        example: 'CE7,FD6'
+    }
+    #swagger.parameters['radius'] = {
+        in: 'query',
+        description: '검색 반경 (단위: 미터, 기본값 1000)',
+        required: false,
+        type: 'number',
+        example: 500
+    }
     */
     try {
         const { lat, lng, categories, radius } = req.query;
