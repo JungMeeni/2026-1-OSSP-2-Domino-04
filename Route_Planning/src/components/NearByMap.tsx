@@ -4,7 +4,7 @@
 
 import { type FC, useEffect, useRef } from "react";
 import type { Place, PlaceData, Category } from "../types/type";
-import { COLOR_PRIMARY, COLOR_INACTIVE, COLOR_TEXT_MAIN, COLOR_TEXT_SUB } from "../colors";
+import { COLOR_INACTIVE, COLOR_TEXT_MAIN, COLOR_TEXT_SUB } from "../colors";
 import type { KakaoCircle, KakaoMapInstance, KakaoMarker, KakaoOverlay } from "../types/type_kakao";
 import { toPlace } from "../utils/Utils";
 
@@ -19,8 +19,11 @@ const CATEGORY_ICON: Record<Category, string> = {
   카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍",
 };
 
+// [THEME] 지도 핀 파란색
+const COLOR_PIN        = "#3B7DFF";
+const COLOR_PIN_ACTIVE = "#2563EB";
+const COLOR_PIN_RING   = "rgba(59,125,255,0.18)";
 
-// 테스트용 장소 데이터 (실제론 API로 받아와야 함)
 const PLACE_LIST: PlaceData[] = [
   { id:  1, name: "성수연방",          category: "카페",   rating: 4.7, reviews: 2341, district: "성동구", latOffset:  0.002, lngOffset: -0.003 },
   { id:  2, name: "대림창고",          category: "갤러리", rating: 4.5, reviews: 1823, district: "성동구", latOffset: -0.001, lngOffset:  0.002 },
@@ -53,37 +56,30 @@ interface NearbyMapProps {
 const NearbyMap: FC<NearbyMapProps> = ({
   userLat, userLng, isLocating, locLabel,
   radiusMeter, selectedPlace, onSelectPlace,
-  selectedRadiusIdx, onSelectRadius,
   kakaoMapRef, isMapReady,
 }) => {
   const circleRef      = useRef<KakaoCircle | null>(null);
   const overlayListRef = useRef<KakaoOverlay[]>([]);
   const markerListRef  = useRef<KakaoMarker[]>([]);
-  const userOverlayRef = useRef<KakaoOverlay | null>(null);
 
-  // [SYNC] GPS 확정 후 현위치 마커 + 지도 중심 이동
-  useEffect(() => {
-    if (!isMapReady || isLocating || !kakaoMapRef.current) return;
-    userOverlayRef.current?.setMap(null);
-    const el = document.createElement("div");
-    el.style.cssText = `width:16px;height:16px;border-radius:50%;background:${COLOR_PRIMARY};border:3px solid #fff;box-shadow:0 0 0 6px rgba(26,107,255,0.18);`;
-    userOverlayRef.current = new window.kakao.maps.CustomOverlay({
-      map: kakaoMapRef.current, position: new window.kakao.maps.LatLng(userLat, userLng),
-      content: el, yAnchor: 0.5, zIndex: 20,
-    });
-    kakaoMapRef.current.setCenter(new window.kakao.maps.LatLng(userLat, userLng));
-  }, [isMapReady, isLocating, userLat, userLng, kakaoMapRef]);
+  // [NOTE] 현위치 마커는 RouteScreen에서 관리 (탭 무관하게 항상 표시)
 
   // [SYNC] 반경 원 업데이트
   useEffect(() => {
     if (!isMapReady || !kakaoMapRef.current) return;
     circleRef.current?.setMap(null);
     circleRef.current = new window.kakao.maps.Circle({
-      map: kakaoMapRef.current,
-      center: new window.kakao.maps.LatLng(userLat, userLng),
-      radius: radiusMeter, strokeWeight: 2, strokeColor: COLOR_PRIMARY,
-      strokeOpacity: 0.7, strokeStyle: "dashed", fillColor: COLOR_PRIMARY, fillOpacity: 0.05,
+      map:           kakaoMapRef.current,
+      center:        new window.kakao.maps.LatLng(userLat, userLng),
+      radius:        radiusMeter,
+      strokeWeight:  2,
+      strokeColor:   COLOR_PIN,
+      strokeOpacity: 0.7,
+      strokeStyle:   "dashed",
+      fillColor:     COLOR_PIN,
+      fillOpacity:   0.05,
     });
+    return () => { circleRef.current?.setMap(null); };
   }, [isMapReady, radiusMeter, userLat, userLng, kakaoMapRef]);
 
   // [SYNC] 장소 마커 업데이트
@@ -94,22 +90,33 @@ const NearbyMap: FC<NearbyMapProps> = ({
     overlayListRef.current = [];
     markerListRef.current  = [];
 
+    const hasSelection = selectedPlace !== null;
+
     PLACE_LIST.map(p => toPlace(p, userLat, userLng)).forEach(place => {
-      const isActive   = place.distance <= radiusMeter;
-      const isSelected = selectedPlace?.id === place.id;
-      const icon       = CATEGORY_ICON[place.category] ?? "📍";
-      const pinColor   = isActive ? COLOR_PRIMARY : COLOR_INACTIVE;
-      const size       = isSelected ? 42 : 34;
-      const pos        = new window.kakao.maps.LatLng(place.lat, place.lng);
+      const isActive       = place.distance <= radiusMeter;
+      const isSelected     = selectedPlace?.id === place.id;
+      const isDeemphasized = hasSelection && !isSelected && isActive;
+
+      const pinColor = isSelected && isActive ? COLOR_PIN_ACTIVE : isActive ? COLOR_PIN : COLOR_INACTIVE;
+      const size     = isSelected && isActive ? 42 : 34;
+      const opacity  = isActive ? (isDeemphasized ? 0.4 : 1) : 0.3;
+      const pos      = new window.kakao.maps.LatLng(place.lat, place.lng);
 
       const el = document.createElement("div");
-      el.style.cssText = `display:flex;flex-direction:column;align-items:center;cursor:${isActive ? "pointer" : "default"};opacity:${isActive ? 1 : 0.35};filter:${isActive ? "none" : "grayscale(100%)"};transition:all 0.3s;`;
+      el.style.cssText = `display:flex;flex-direction:column;align-items:center;cursor:${isActive ? "pointer" : "default"};opacity:${opacity};filter:${isActive ? "none" : "grayscale(100%)"};transition:all 0.25s;`;
       el.innerHTML = `
-        ${isSelected && isActive ? `<div style="background:#fff;border-radius:10px;padding:5px 10px;margin-bottom:5px;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,0.14);font-size:12px;font-weight:700;color:${COLOR_TEXT_MAIN};border:2px solid ${COLOR_PRIMARY};position:relative;font-family:'Noto Sans KR',sans-serif;">${place.name} ⭐${place.rating}<div style="position:absolute;bottom:-7px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid ${COLOR_PRIMARY};"></div></div>` : ""}
-        <div style="width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${pinColor};border:2.5px solid #fff;box-shadow:${isSelected ? "0 4px 14px rgba(26,107,255,0.45)" : "0 2px 8px rgba(0,0,0,0.18)"};display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:${isSelected ? 18 : 14}px;line-height:1">${icon}</span></div>
-        <div style="margin-top:3px;font-size:10px;font-weight:${isSelected ? 800 : 600};color:${isActive ? COLOR_TEXT_MAIN : COLOR_INACTIVE};white-space:nowrap;text-shadow:0 1px 3px rgba(255,255,255,0.9);font-family:'Noto Sans KR',sans-serif;">${place.name}</div>`;
+        ${isSelected && isActive ? `
+          <div style="background:#fff;border-radius:10px;padding:5px 10px;margin-bottom:5px;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,0.14);font-size:12px;font-weight:700;color:${COLOR_TEXT_MAIN};border:2px solid ${COLOR_PIN};position:relative;font-family:'Noto Sans KR',sans-serif;">
+            ${place.name} ⭐${place.rating}
+            <div style="position:absolute;bottom:-7px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid ${COLOR_PIN};"></div>
+          </div>` : ""}
+        <div style="width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${pinColor};border:2.5px solid #fff;box-shadow:${isSelected ? "0 4px 14px rgba(59,125,255,0.45)" : "0 2px 8px rgba(0,0,0,0.18)"};transition:all 0.25s;"></div>
+        <div style="margin-top:3px;font-size:10px;font-weight:${isSelected ? 800 : 600};color:${isActive ? COLOR_TEXT_MAIN : COLOR_INACTIVE};white-space:nowrap;text-shadow:0 1px 3px rgba(255,255,255,0.9);font-family:'Noto Sans KR',sans-serif;transition:all 0.25s;">${place.name}</div>`;
 
-      const overlay = new window.kakao.maps.CustomOverlay({ map: kakaoMapRef.current!, position: pos, content: el, yAnchor: 1.15 });
+      const overlay = new window.kakao.maps.CustomOverlay({
+        map: kakaoMapRef.current!, position: pos, content: el,
+        yAnchor: 1.15, zIndex: isSelected ? 10 : 5,
+      });
       overlayListRef.current.push(overlay);
 
       if (isActive) {
@@ -122,21 +129,27 @@ const NearbyMap: FC<NearbyMapProps> = ({
         });
       }
     });
+    return () => {
+      overlayListRef.current.forEach(o => o.setMap(null));
+      markerListRef.current.forEach(m => m.setMap(null));
+      overlayListRef.current = [];
+      markerListRef.current  = [];
+    };
   }, [isMapReady, radiusMeter, selectedPlace, userLat, userLng, onSelectPlace, kakaoMapRef]);
 
+  // [NOTE] 반경 버튼은 바텀 시트 패널로 이동
   return (
-    <>
-      <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", background: "rgba(255,255,255,0.92)", backdropFilter: "blur(8px)", borderRadius: 20, padding: "4px 14px", fontSize: 12, fontWeight: 600, color: COLOR_TEXT_SUB, boxShadow: "0 2px 8px rgba(0,0,0,0.08)", whiteSpace: "nowrap", zIndex: 10, fontFamily: "'Noto Sans KR', sans-serif" }}>
-        {locLabel}
-      </div>
-      <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 6, background: "rgba(255,255,255,0.96)", borderRadius: 24, padding: "4px 6px", boxShadow: "0 2px 12px rgba(0,0,0,0.1)", zIndex: 10 }}>
-        {RADIUS_OPTION_LIST.map((opt, i) => (
-          <button key={opt.label} onClick={() => onSelectRadius(i)} style={{ padding: "5px 14px", borderRadius: 20, border: "none", cursor: "pointer", background: selectedRadiusIdx === i ? COLOR_PRIMARY : "transparent", color: selectedRadiusIdx === i ? "#fff" : COLOR_TEXT_SUB, fontSize: 12, fontWeight: 600, fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.2s" }}>
-            {opt.label}
-          </button>
-        ))}
-      </div>
-    </>
+    <div style={{
+      position: "absolute", top: 80, left: "50%", transform: "translateX(-50%)",
+      background: "rgba(255,255,255,0.88)", backdropFilter: "blur(8px)",
+      borderRadius: 20, padding: "4px 14px",
+      fontSize: 12, fontWeight: 600, color: COLOR_TEXT_SUB,
+      boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+      whiteSpace: "nowrap", zIndex: 10,
+      fontFamily: "'Noto Sans KR', sans-serif",
+    }}>
+      {locLabel}
+    </div>
   );
 };
 
