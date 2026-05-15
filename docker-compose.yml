@@ -37,9 +37,12 @@ services:
       - DB_HOST=db # 도커 내부망 통신을 위해 localhost 대신 컨테이너 이름(db) 사용
       - MYSQL_HOST=db
       - REDIS_HOST=redis
+      - FASTAPI_URL=http://fastapi-server:8000
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - app-network
 
   fastapi-server:
     build: ./fastapi-server
@@ -52,5 +55,13 @@ services:
     environment:
       - MYSQL_HOST=db    # 도커 내부망 통신을 위해 db 컨테이너 지정
       - REDIS_HOST=redis # 도커 내부망 통신을 위해 redis 컨테이너 지정
+      - EXPRESS_URL=http://express-server:3000
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session      # 추가됨!
 from sqlalchemy import text             # 추가됨!
 from dotenv import load_dotenv
 
-from app.routers import disaster, route
+from app.routers import disaster, route, population
 from app.database import get_db         # 추가됨!
 
 load_dotenv()
@@ -11,6 +11,7 @@ load_dotenv()
 app = FastAPI()
 
 app.include_router(disaster.router, prefix="/disaster")
+app.include_router(population.router, prefix="/population")
 app.include_router(route.router, prefix="/route")
 
 @app.get("/")

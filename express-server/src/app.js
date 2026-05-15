@@ -6,6 +6,10 @@ const path = require('path');
 const helmet = require('helmet');
 const cors = require('cors');
 
+//api 문서화 패키지 로드
+const swaggerUi = require('swagger-ui-express');
+const swaggerFile = require('./swagger-output.json'); // 자동 생성된 파일
+
 // 환경변수 로드 (실행 위치에 구애받지 않도록 절대 경로 명시)
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
@@ -27,21 +31,31 @@ app.use('/api/auth', authRoutes);
 app.use('/api/map', mapRoutes);
 app.use('/api/media', mediaRoutes);
 
-// 4. 전역 에러 핸들링 미들웨어 (반드시 라우터 매핑 하단에 위치)
+// 4. API 문서 경로 설정 (보통 /api-docs 사용)
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerFile));
+
+// 서버 상태 확인용
+app.get('/', (req, res) => res.send('API Server is Running!'));
+
+// 5. 전역 에러 핸들링 미들웨어 (반드시 라우터 매핑 하단에 위치)
 app.use((err, req, res, next) => {
     // 서버 내부 로깅용 에러 스택 출력
     console.error(err.stack); 
     // 클라이언트에게는 보안상 추상화된 메시지만 응답
-    res.status(500).json({ success: false, message: '서버 내부 오류가 발생했습니다.' });
+    res.status(500).json({ 
+      success: false, 
+      message: '서버 내부 오류가 발생했습니다.' 
+    });
 });
 
-// 5. 서버 실행 제어
+// 6. 서버 실행 제어
 const PORT = process.env.PORT || 3000;
 // 직접 실행(node app.js)될 때만 서버를 구동하고, 모듈로 import 될 때는 구동하지 않음
 if (require.main === module) {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server is running on port ${PORT}`);
+        console.log(`📄 API Docs available at http://localhost:${PORT}/api-docs`);
     });
 }
-app.get('/', (req, res) => res.send('API Server is Running!'));
+
 module.exports = app;
