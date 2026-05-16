@@ -176,4 +176,54 @@ router.get('/recommend', async (req, res) => {
     }
 });
 
+router.get('/directions', async (req, res) => {
+    /* #swagger.tags = ['Map (지도 관련 API)']
+    #swagger.summary = '경로 탐색 (카카오 Directions)'
+    #swagger.description = '출발지, 도착지, 경유지를 받아서 카카오 모빌리티 API를 통해 경로를 요청하고 결과를 가공 없이 돌려줍니다.'
+    #swagger.parameters['origin'] = {
+        in: 'query',
+        description: '출발지 "경도,위도" (예: "127.0374,37.5447")',
+        required: true,
+        type: 'string',
+        example: '127.0374,37.5447'
+    }
+    #swagger.parameters['destination'] = {
+        in: 'query',
+        description: '도착지 "경도,위도"',
+        required: true,
+        type: 'string',
+        example: '127.0400,37.5500'
+    }
+    #swagger.parameters['waypoints'] = {
+        in: 'query',
+        description: '경유지들 "경도,위도|경도,위도" 형식 (최대 5개)',
+        required: false,
+        type: 'string'
+    }
+    */
+    try {
+        const { origin, destination } = req.query;
+
+        // 1. 필수 파라미터 검증
+        if (!origin || !destination) {
+            return res.status(400).json({ error: '출발지(origin)와 도착지(destination)는 필수 파라미터입니다.' });
+        }
+
+        // 2. 카카오 서비스 계층 호출 (req.query를 통째로 전달하여 가공 없이 proxy 처리)
+        const results = await getDirections(req.query);
+        
+        // 3. 카카오 서버의 응답을 프론트엔드에 그대로 반환
+        res.json(results);
+
+    } catch (error) {
+        console.error('🚨 경로 탐색 라우터 에러:', error);
+        
+        // 외부 API 에러 상태코드가 있으면 그대로 전달하고, 없으면 500 처리
+        const statusCode = error.response?.status || 500;
+        const errorMessage = error.response?.data || { error: "경로 데이터를 불러오는 중 오류가 발생했습니다." };
+        
+        res.status(statusCode).json(errorMessage);
+    }
+});
+
 module.exports = router;
