@@ -64,18 +64,17 @@ router.get('/tripadvisor/search', async (req, res) => {
  */
 router.get('/tripadvisor/details/:locationId', async (req, res) => {
     /* #swagger.tags = ['Proxy API (외부 API 대리 호출)']
-    #swagger.summary = 'Tripadvisor 장소 상세 정보 조회 (평점/리뷰수)'
-    #swagger.description = 'Tripadvisor의 location_id를 기반으로 해당 장소의 평점, 리뷰 수, 웹 URL 등의 상세 정보를 반환합니다.'
-    #swagger.parameters['locationId'] = {
-        in: 'path',
-        description: 'Tripadvisor 장소 고유 ID',
-        required: true,
-        type: 'string',
-        example: '3248881'
-    }
+    // ... (스웨거 주석 유지) ...
     */
     try {
         const { locationId } = req.params;
+
+        if (!locationId || locationId === 'undefined' || locationId === 'null') {
+            console.error('🚨 [차단됨] 잘못된 locationId가 요청되었습니다:', locationId);
+            return res.status(400).json({ error: '유효하지 않은 locationId 입니다.' });
+        }
+
+        console.log(`✅ 요청된 Location ID: ${locationId}`); // 정상 요청인지 터미널에서 확인용
 
         const response = await axios.get(`https://api.content.tripadvisor.com/api/v1/location/${locationId}/details`, {
             params: {
@@ -83,13 +82,13 @@ router.get('/tripadvisor/details/:locationId', async (req, res) => {
                 key: process.env.TRIPADVISOR_API_KEY
             },
             headers: {
-                'Referer': ''
+                'accept': 'application/json'
             }
         });
 
         res.json(response.data);
     } catch (error) {
-        console.error('🚨 Tripadvisor 장소 상세 에러:', error);
+        console.error(`🚨 Tripadvisor 장소 상세 에러 (ID: ${req.params.locationId}):`, error.response?.data || error.message);
         const statusCode = error.response?.status || 500;
         res.status(statusCode).json(error.response?.data || { error: '장소 상세 정보를 불러오는데 실패했습니다.' });
     }
