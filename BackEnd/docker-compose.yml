@@ -1,3 +1,4 @@
+version: '3.8' #추가
 services:
 
   db:
@@ -22,7 +23,9 @@ services:
       retries: 5
       
   express-server:
-    build: ./express-server
+    build: #./express-server
+      context: ./express-server
+      dockerfile: Dockerfile # express-server/Dockerfile(원래)
     ports:
       - "3000:3000"
     volumes:
@@ -45,7 +48,9 @@ services:
       - app-network
 
   fastapi-server:
-    build: ./fastapi-server
+    build: 
+      context: . # 기준 위치를 현재 폴더(src)에서 상위 폴더(BackEnd)로 변경
+      dockerfile: docker/fast.api/Dockerfile  # 분리해둔 Dockerfile 경로 지정
     ports:
       - "8000:8000" # FastAPI 기본 포트 (필요에 따라 수정)
     volumes:
