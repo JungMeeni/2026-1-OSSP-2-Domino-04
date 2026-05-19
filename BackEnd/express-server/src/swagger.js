@@ -3,9 +3,9 @@ const swaggerAutogen = require('swagger-autogen')();
 const doc = {
   info: {
     title: '공개SW 프로젝트 API',
-    description: '설명 적기 귀찮아서 자동으로 만든 문서'
+    description: 'API 테스트용 문서입니다.'
   },
-  host: 'localhost:3000'
+  host: '52.79.60.9:3000'
 };
 
 const outputFile = './swagger-output.json'; // 생성될 문서 파일 이름
