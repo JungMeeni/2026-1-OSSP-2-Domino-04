@@ -22,7 +22,7 @@ app.use(helmet()); // HTTP 헤더 보안 취약점 방어
 // 1-1. 강력한 CORS 설정 (도메인 제한)
 const allowedOrigins = [
   'http://localhost:5173', // 프론트엔드 개발 환경 (Vite)
-  'http://localhost:3000', // API 서버 자체에서의 테스트용
+  process.env.BACKEND_URL, // API 서버 자체에서의 테스트용
   process.env.FRONTEND_URL // 프로덕션 프론트엔드 주소 (.env에서 로드)
 ];
 
