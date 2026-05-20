@@ -1,0 +1,13 @@
+# --- 공통 및 보안 ---
+.env
+.env.*
+mysql_data/
+firebase-adminsdk.json
+
+*.json
+!package.json
+!package-lock.json
+
+# --- Mac/Windows 시스템 파일 ---
+.DS_Store
+Thumbs.db

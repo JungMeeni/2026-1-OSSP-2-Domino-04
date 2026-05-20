@@ -1,0 +1,75 @@
+version: '3.8' #추가
+services:
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    volumes:
+      - ./docker/mysql/healthcheck.sh:/healthcheck.sh:ro
+      - ./mysql_data:/var/lib/mysql # 데이터가 사라지지 않게 내 컴퓨터에 저장
+    env_file:
+      - .env
+    environment:
+      # .env 파일에 정의된 변수를 사용하거나 직접 적어주세요
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD} 
+      MYSQL_DATABASE: ${DB_NAME}
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "bash", "/healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+      
+  express-server:
+    build: #./express-server
+      context: ./express-server
+      dockerfile: Dockerfile # express-server/Dockerfile(원래)
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./express-server:/app  # 기존 '.'에서 변경
+      - /app/node_modules
+      # Firebase 키 경로도 express-server 안으로 맞춰주었습니다.
+      - ./express-server/src/services/config/firebase-admin-key.json:/app/src/services/config/firebase-admin-key.json
+    env_file:
+      - .env # 루트의 통합 .env 파일 사용
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=db # 도커 내부망 통신을 위해 localhost 대신 컨테이너 이름(db) 사용
+      - MYSQL_HOST=db
+      - REDIS_HOST=redis
+      - FASTAPI_URL=http://fastapi-server:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  fastapi-server:
+    build: 
+      context: . # 기준 위치를 현재 폴더(src)에서 상위 폴더(BackEnd)로 변경
+      dockerfile: docker/fast.api/Dockerfile  # 분리해둔 Dockerfile 경로 지정
+    restart: unless-stopped
+    ports:
+      - "8000:8000" # FastAPI 기본 포트 (필요에 따라 수정)
+    volumes:
+      - ./fastapi-server:/app # 코드 수정 시 즉시 반영되도록 볼륨 마운트 (Dockerfile의 WORKDIR가 /app이라고 가정)
+    env_file:
+      - .env
+    environment:
+      - MYSQL_HOST=db    # 도커 내부망 통신을 위해 db 컨테이너 지정
+      - REDIS_HOST=redis # 도커 내부망 통신을 위해 redis 컨테이너 지정
+      - EXPRESS_URL=http://express-server:3000
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
