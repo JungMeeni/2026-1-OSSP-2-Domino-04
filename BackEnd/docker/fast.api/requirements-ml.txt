@@ -1,0 +1,21 @@
+# 데이터 전처리 및 연산
+pandas
+numpy
+
+# 머신러닝
+scikit-learn
+
+# 딥러닝 (CPU only - pip로 별도 설치 필요)
+#torch==2.2.0+cpu
+#torchvision==0.17.0+cpu
+#torchaudio==2.2.0+cpu
+
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# 그래프/경로 데이터
+networkx
+geopandas
+
+# 시각화 및 테스트
+matplotlib
+jupyter
