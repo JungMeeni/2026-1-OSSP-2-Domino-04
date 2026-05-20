@@ -4,7 +4,7 @@ import { runBackendTests } from './apis/backend_test.ts'
 import './index.css'
 import App from './App.tsx'
 
-runBackendTests();
+//runBackendTests();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
