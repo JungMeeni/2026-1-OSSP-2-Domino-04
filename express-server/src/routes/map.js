@@ -46,7 +46,9 @@ router.get('/tripadvisor/search', async (req, res) => {
                 key: process.env.TRIPADVISOR_API_KEY
             },
             headers: {
-                'Referer': ''
+                'Referer': 'https://idfriend.kr',
+    		'Origin': 'https://idfriend.kr',
+    		'accept': 'application/json'
             }
         });
 
@@ -82,6 +84,8 @@ router.get('/tripadvisor/details/:locationId', async (req, res) => {
                 key: process.env.TRIPADVISOR_API_KEY
             },
             headers: {
+		'Referer': 'https://idfriend.kr',
+    		'Origin': 'https://idfriend.kr',
                 'accept': 'application/json'
             }
         });
