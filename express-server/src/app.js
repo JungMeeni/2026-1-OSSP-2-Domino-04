@@ -12,7 +12,7 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerFile = require('./swagger-output.json'); // 자동 생성된 파일
 
 // 환경변수 로드 (실행 위치에 구애받지 않도록 절대 경로 명시)
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const app = express();
 
@@ -22,7 +22,11 @@ app.use(helmet()); // HTTP 헤더 보안 취약점 방어
 // 1-1. 강력한 CORS 설정 (도메인 제한)
 const allowedOrigins = [
   'http://localhost:5173', // 프론트엔드 개발 환경 (Vite)
-  process.env.FRONTEND_URL // 프로덕션 프론트엔드 주소 (.env에서 로드)
+  'http://localhost:3000', // 로컬 테스트용
+  process.env.BACKEND_URL, // API 서버 자체에서의 테스트용
+  process.env.FRONTEND_URL, // 프로덕션 프론트엔드 주소 (.env에서 로드)
+  'https://idfriend.kr',
+  'http://idfriend.kr'
 ];
 
 app.use(cors({
@@ -31,7 +35,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('CORS 정책에 의해 차단된 접근입니다.'));
+      callback(null, false);
     }
   },
   credentials: true, // 프론트와 쿠키/세션 공유가 필요하다면 true
@@ -82,6 +86,12 @@ if (require.main === module) {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server is running on port ${PORT}`);
         console.log(`📄 API Docs available at http://localhost:${PORT}/api-docs`);
+	// 🛠️ 환경 변수 주입 확인용 로그 추가!
+        console.log(`🔑 [환경변수 체크] TRIPADVISOR_API_KEY 존재 여부: ${process.env.TRIPADVISOR_API_KEY ? '✅ 매핑 성공' : '❌ undefined (없음)'}`);
+        // 보안을 위해 앞 5글자만 살짝 출력해보고 싶다면:
+        if (process.env.TRIPADVISOR_API_KEY) {
+            console.log(`   👉 Key 앞부분: ${process.env.TRIPADVISOR_API_KEY.substring(0, 5)}...`);
+        }
     });
 }
 

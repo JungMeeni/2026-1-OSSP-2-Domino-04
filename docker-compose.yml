@@ -3,10 +3,10 @@ services:
 
   db:
     image: mysql:8.0
+    restart: unless-stopped
     volumes:
       - ./docker/mysql/healthcheck.sh:/healthcheck.sh:ro
       - ./mysql_data:/var/lib/mysql # 데이터가 사라지지 않게 내 컴퓨터에 저장
-    restart: always
     env_file:
       - .env
     environment:
@@ -27,6 +27,7 @@ services:
     build: #./express-server
       context: ./express-server
       dockerfile: Dockerfile # express-server/Dockerfile(원래)
+    restart: unless-stopped
     ports:
       - "3000:3000"
     volumes:
@@ -52,6 +53,7 @@ services:
     build: 
       context: . # 기준 위치를 현재 폴더(src)에서 상위 폴더(BackEnd)로 변경
       dockerfile: docker/fast.api/Dockerfile  # 분리해둔 Dockerfile 경로 지정
+    restart: unless-stopped
     ports:
       - "8000:8000" # FastAPI 기본 포트 (필요에 따라 수정)
     volumes:
