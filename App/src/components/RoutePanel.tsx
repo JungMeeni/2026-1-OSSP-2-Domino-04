@@ -2,7 +2,7 @@
 // RoutePanel — 경로 탐색 + 추천 경로 통합 패널
 //
 // [구조]
-//   상단 탭: "직접 입력" | "추천 경로"
+//   상단 탭: "추천 경로" | "직접 입력"
 //
 //   직접 입력 탭:
 //     - 출발지/도착지 입력 + 경유지 자동 추천
@@ -15,7 +15,9 @@
 // ═══════════════════════════════════════════════════════════
 
 import { type FC, useState, useCallback } from "react";
-import type { RouteState, RoutePoint, RouteResult, DirectionsResponse, Category } from "../types/type";
+import type { RouteState, RoutePoint, RouteResult, Category, Place } from "../types/type";
+import PlaceSearchInput from "./PlaceSearchInput";
+import PlaceMarker from "./PlaceMarker";
 import type { KakaoMapInstance, KakaoOverlay, KakaoPolyline } from "../types/type_kakao";
 import {
   COLOR_BORDER, COLOR_DANGER, COLOR_INACTIVE, COLOR_PRIMARY, COLOR_PRIMARY_LIGHT,
@@ -24,6 +26,7 @@ import {
 } from "../colors";
 import { formatDistance, formatDuration } from "../utils/Utils";
 import type { RecommendedPlace, RecommendedRoute } from "../hooks/Userecommendedroute";
+import { fetchTaDetail, fetchTaLocationId } from "../hooks/Usekakaonearby";
 
 // ── [CONFIG] ──────────────────────────────────────────────
 
@@ -48,52 +51,37 @@ const CATEGORY_COLOR: Record<Category, string> = {
 
 const taUrl = (path: string) =>
   import.meta.env.DEV
-    ? `/vite-proxy/tripadvisor/v1/${path}`
+    ? `/vite-proxy/tripadvisor/api/v1/${path}`
     : `${import.meta.env.VITE_BACKEND_URL}/api/tripadvisor/${path}`;
 
-const geocodeAddress = (query: string): Promise<RoutePoint> =>
-  new Promise((resolve, reject) => {
-    const geocoder = new window.kakao.maps.services.Geocoder();
-    geocoder.addressSearch(query, (result: any[], status: string) => {
-      if (status === window.kakao.maps.services.Status.OK && result[0])
-        resolve({ label: result[0].address_name, lat: parseFloat(result[0].y), lng: parseFloat(result[0].x) });
-      else reject(new Error(`"${query}" 주소를 찾을 수 없어요`));
-    });
-  });
-
-// fetchCarRoute는 buildManualRoutes 내부에서 직접 처리
-
-const fetchTaLocationId = async (name: string, lat: number, lng: number): Promise<string | null> => {
-  try {
-    const params = new URLSearchParams({ searchQuery: name, latLong: `${lat},${lng}`, language: "ko", key: TA_API_KEY });
-    const res = await fetch(`${taUrl("location/search")}?${params}`);
-    if (!res.ok) return null;
-    return (await res.json()).data?.[0]?.location_id ?? null;
-  } catch { return null; }
-};
-
-const fetchTaDetail = async (id: string): Promise<{ rating: number; reviews: number } | null> => {
-  try {
-    const params = new URLSearchParams({ language: "ko", key: TA_API_KEY });
-    const res = await fetch(`${taUrl(`location/${id}/details`)}?${params}`);
-    if (!res.ok) return null;
-    const json = await res.json();
-    return { rating: parseFloat(json.rating ?? "0"), reviews: parseInt(json.num_reviews ?? "0", 10) };
-  } catch { return null; }
-};
+/**
+ * TripAdvisor API 요청을 배치 단위로 나눠서 순차 실행한다.
+ * 한 번에 너무 많은 요청을 동시에 보내면 429 (Too Many Requests) 에러가 발생하므로,
+ * batchSize 개씩 묶어서 실행하고 배치 사이마다 delayMs 만큼 대기한다.
+ */
+async function fetchInBatches<T>(
+  fns: (() => Promise<T>)[],
+  batchSize = 5,
+  delayMs   = 300,
+): Promise<(T | null)[]> {
+  const results: (T | null)[] = [];
+  for (let i = 0; i < fns.length; i += batchSize) {
+    const batch = await Promise.allSettled(fns.slice(i, i + batchSize).map(fn => fn()));
+    results.push(...batch.map(r => (r.status === "fulfilled" ? r.value : null)));
+    // 마지막 배치가 아니면 딜레이를 줘서 rate limit 초과를 방지한다
+    if (i + batchSize < fns.length) await new Promise(res => setTimeout(res, delayMs));
+  }
+  return results;
+}
 
 interface KakaoPlaceItem {
   id: string; place_name: string; address_name: string; x: string; y: string; distance: string;
 }
 
-
-
 // ── [지도 렌더링] ─────────────────────────────────────────
 
 const drawOnMap = (
   roads:           RouteResult["roads"],
-  origin:          { lat: number; lng: number; label: string },
-  dest:            { lat: number; lng: number; label: string },
   waypoints:       { lat: number; lng: number; name: string }[],
   kakaoMapRef:     React.MutableRefObject<KakaoMapInstance | null>,
   polylineListRef: React.MutableRefObject<KakaoPolyline[]>,
@@ -130,9 +118,7 @@ const drawOnMap = (
     }));
   };
 
-  makePin(origin.lat, origin.lng, COLOR_ORIGIN, "🟢", origin.label);
   waypoints.forEach((p, i) => makePin(p.lat, p.lng, COLOR_PRIMARY, `${i + 1}`, `${i + 1}. ${p.name}`));
-  makePin(dest.lat, dest.lng, COLOR_DEST, "🔴", dest.label);
 
   const bounds = new window.kakao.maps.LatLngBounds();
   roads.forEach(road => {
@@ -251,10 +237,10 @@ interface RoutePanelProps {
   onSetError:      (m: string) => void;
   userLat:         number;
   userLng:         number;
+  isServicesReady: boolean;
   kakaoMapRef:     React.MutableRefObject<KakaoMapInstance | null>;
   polylineListRef: React.MutableRefObject<KakaoPolyline[]>;
   overlayListRef:  React.MutableRefObject<KakaoOverlay[]>;
-  // 추천 경로 데이터 (RouteScreen에서 전달)
   recRoutes:       RecommendedRoute[];
   recIsLoading:    boolean;
   recError:        string | null;
@@ -323,17 +309,18 @@ const buildManualRoutes = async (
 
   if (rawPlaces.length === 0) return [];
 
-  // ── Step 2: Tripadvisor 평점 보강 (상위 20개까지 조회)
-  const top = rawPlaces.slice(0, 20);
-  const idResults     = await Promise.allSettled(top.map(({ item }) =>
-    fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x))
-  ));
-  const detailResults = await Promise.allSettled(idResults.map(r =>
-    r.status === "fulfilled" && r.value ? fetchTaDetail(r.value) : Promise.resolve(null)
-  ));
+  // ── Step 2: Tripadvisor 평점 보강
+  // 한 번에 모두 요청하면 429 rate limit에 걸리므로 fetchInBatches로 5개씩 나눠서 조회한다
+  const top       = rawPlaces.slice(0, 20);
+  const idResults = await fetchInBatches(
+    top.map(({ item }) => () => fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x))),
+  );
+  const detailResults = await fetchInBatches(
+    idResults.map(id => () => (id ? fetchTaDetail(id) : Promise.resolve(null))),
+  );
 
   const enriched: RecommendedPlace[] = top.map(({ item, category }, i) => {
-    const d       = detailResults[i].status === "fulfilled" ? detailResults[i].value : null;
+    const d       = detailResults[i]; // fetchInBatches는 값 자체(T | null)를 반환한다
     const rating  = d?.rating  ?? 0;
     const reviews = d?.reviews ?? 0;
     const dist    = parseInt(item.distance, 10);
@@ -443,7 +430,7 @@ const buildManualRoutes = async (
 
 const RoutePanel: FC<RoutePanelProps> = ({
   routeState, onSetOrigin, onSetDest, onSetResult, onSetLoading, onSetError,
-  userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef,
+  userLat, userLng, isServicesReady, kakaoMapRef, polylineListRef, overlayListRef,
   recRoutes, recIsLoading, recError, recRefetch,
 }) => {
   const [panelTab,    setPanelTab]    = useState<"manual" | "recommend">("recommend");
@@ -459,13 +446,19 @@ const RoutePanel: FC<RoutePanelProps> = ({
   const [manualError,       setManualError]        = useState<string | null>(null);
   const [selectedManualIdx, setSelectedManualIdx]  = useState<number | null>(null);
 
+  // 추천 경로 출발지/도착지 PlaceMarker 상태
+  const [recOriginPlace, setRecOriginPlace] = useState<Place | null>(null);
+  const [recDestPlace,   setRecDestPlace]   = useState<Place | null>(null);
+
   // 현위치 기반 추천 경로 카드 선택 → 지도에 표시
   const handleSelectRoute = useCallback((idx: number) => {
     const route = recRoutes[idx];
     if (!route) return;
     setSelectedRouteIdx(idx);
     const dest = route.places[route.places.length - 1];
-    drawOnMap(route.roads, { lat: userLat, lng: userLng, label: "현재 위치" }, { lat: dest.lat, lng: dest.lng, label: dest.name }, route.places.slice(0, -1), kakaoMapRef, polylineListRef, overlayListRef);
+    setRecOriginPlace({ id: -1, name: "현재 위치", category: "명소", rating: 0, reviews: 0, district: "", lat: userLat, lng: userLng, distance: 0 });
+    setRecDestPlace(dest ?? null);
+    drawOnMap(route.roads, route.places.slice(0, -1), kakaoMapRef, polylineListRef, overlayListRef);
   }, [recRoutes, userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef]);
 
   // 직접 입력 후보 경로 선택 → 지도에 표시
@@ -473,31 +466,28 @@ const RoutePanel: FC<RoutePanelProps> = ({
     const route = manualRoutes[idx];
     if (!route) return;
     setSelectedManualIdx(idx);
-    const origin = routeState.origin!;
-    const dest   = routeState.destination!;
-    drawOnMap(route.roads, origin, dest, route.places, kakaoMapRef, polylineListRef, overlayListRef);
-  }, [manualRoutes, routeState, kakaoMapRef, polylineListRef, overlayListRef]);
+    drawOnMap(route.roads, route.places, kakaoMapRef, polylineListRef, overlayListRef);
+  }, [manualRoutes, kakaoMapRef, polylineListRef, overlayListRef]);
 
-  // 직접 입력 — 주소 변환 후 후보 경로 3개 생성
+  // 직접 입력 — 이미 선택된 origin/dest 기준으로 후보 경로 3개 생성
   const handleSearch = useCallback(async () => {
-    if (!originInput.trim() || !destInput.trim()) { onSetError("출발지와 도착지를 모두 입력해주세요"); return; }
+    const origin = routeState.origin;
+    const dest   = routeState.destination;
+    if (!origin || !dest) { onSetError("출발지와 도착지를 모두 선택해주세요"); return; }
     setManualLoading(true); setManualError(null); setManualRoutes([]); setSelectedManualIdx(null);
     onSetError(""); onSetResult(null);
-    // 지도 초기화
     polylineListRef.current.forEach(p => p.setMap(null)); overlayListRef.current.forEach(o => o.setMap(null));
     polylineListRef.current = []; overlayListRef.current = [];
     try {
-      const [origin, dest] = await Promise.all([geocodeAddress(originInput), geocodeAddress(destInput)]);
-      onSetOrigin(origin); onSetDest(dest);
       const routes = await buildManualRoutes(origin, dest);
-      if (routes.length === 0) setManualError("추천 경로를 생성하지 못했어요. 다른 주소를 입력해보세요.");
+      if (routes.length === 0) setManualError("추천 경로를 생성하지 못했어요. 다른 장소를 선택해보세요.");
       else setManualRoutes(routes);
     } catch (e) {
       onSetError((e as Error).message);
     } finally {
       setManualLoading(false);
     }
-  }, [originInput, destInput, onSetOrigin, onSetDest, onSetResult, onSetError, polylineListRef, overlayListRef]);
+  }, [routeState.origin, routeState.destination, onSetResult, onSetError, polylineListRef, overlayListRef]);
 
   const handleUseCurrentLoc = useCallback(() => {
     onSetOrigin({ label: "현재 위치", lat: userLat, lng: userLng });
@@ -505,10 +495,14 @@ const RoutePanel: FC<RoutePanelProps> = ({
   }, [userLat, userLng, onSetOrigin]);
 
   const handleSwap = useCallback(() => {
-    onSetOrigin(routeState.destination); onSetDest(routeState.origin);
-    setOriginInput(routeState.destination?.label ?? ""); setDestInput(routeState.origin?.label ?? "");
+    const prevOrigin = originInput;
+    const prevDest   = destInput;
+    setOriginInput(prevDest);
+    setDestInput(prevOrigin);
+    onSetOrigin(routeState.destination);
+    onSetDest(routeState.origin);
     onSetResult(null); setManualRoutes([]); setSelectedManualIdx(null);
-  }, [routeState, onSetOrigin, onSetDest, onSetResult]);
+  }, [originInput, destInput, routeState, onSetOrigin, onSetDest, onSetResult]);
 
   // 탭 전환 시 지도 초기화
   const handlePanelTab = (tab: "manual" | "recommend") => {
@@ -516,6 +510,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
     overlayListRef.current.forEach(o => o.setMap(null));
     polylineListRef.current = []; overlayListRef.current = [];
     setSelectedRouteIdx(null); setSelectedManualIdx(null);
+    setRecOriginPlace(null); setRecDestPlace(null);
     onSetResult(null);
     setPanelTab(tab);
   };
@@ -581,7 +576,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                 <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_SUB }}>
                   현위치 기반 추천 경로 <span style={{ color: COLOR_PRIMARY }}>{recRoutes.length}개</span>
                 </div>
-                <button onClick={() => { recRefetch(); setSelectedRouteIdx(null); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: COLOR_TEXT_SUB, padding: 0 }}>🔄 재추천</button>
+                <button onClick={() => { recRefetch(); setSelectedRouteIdx(null); setRecOriginPlace(null); setRecDestPlace(null); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: COLOR_TEXT_SUB, padding: 0 }}>🔄 재추천</button>
               </div>
 
               {/* 추천 기준 배지 */}
@@ -628,19 +623,53 @@ const RoutePanel: FC<RoutePanelProps> = ({
         <div style={{ padding: "16px 16px 32px", display: "flex", flexDirection: "column", gap: 12 }}>
 
           {/* 출발지/도착지 */}
-          <div style={{ background: COLOR_SURFACE, borderRadius: 14, border: `1px solid ${COLOR_BORDER}`, overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", padding: "11px 14px", gap: 10, borderBottom: `1px solid ${COLOR_BORDER}` }}>
-              <div style={{ width: 10, height: 10, borderRadius: "50%", background: COLOR_ORIGIN, flexShrink: 0 }} />
-              <input value={originInput} onChange={e => setOriginInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSearch()} placeholder="출발지 주소 입력" style={{ flex: 1, border: "none", outline: "none", fontSize: 13, color: COLOR_TEXT_MAIN, background: "transparent", fontFamily: "'Noto Sans KR', sans-serif" }} />
-              <button onClick={handleUseCurrentLoc} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, padding: 0 }}>📍</button>
-            </div>
+          <div style={{ background: COLOR_SURFACE, borderRadius: 14, border: `1px solid ${COLOR_BORDER}` }}>
+            <PlaceSearchInput
+              externalValue={originInput}
+              getDisplayValue={result => result.place_name}
+              onConfirm={result => {
+                onSetOrigin({ label: result.place_name, lat: Number(result.y), lng: Number(result.x) });
+                setOriginInput(result.place_name);
+              }}
+              onFocusResult={result => {
+                if (kakaoMapRef.current) {
+                  kakaoMapRef.current.setCenter(new window.kakao.maps.LatLng(Number(result.y), Number(result.x)));
+                  kakaoMapRef.current.setLevel(3);
+                }
+              }}
+              isServicesReady={isServicesReady}
+              placeholder="출발지 검색"
+              dotStyle={{ borderRadius: "50%", background: "#22c55e" }}
+              rightSlot={<button onClick={handleUseCurrentLoc} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, padding: 0, flexShrink: 0 }}>📍</button>}
+              rowStyle={{ padding: "11px 14px", borderBottom: `1px solid ${COLOR_BORDER}` }}
+              kakaoMapRef={kakaoMapRef}
+              markerColor="#22c55e"
+              confirmedPin={routeState.origin?.label === "현재 위치" ? { lat: userLat, lng: userLng, label: "현재 위치" } : null}
+            />
+            {/* swap 버튼 */}
             <div style={{ position: "relative", height: 0, zIndex: 5 }}>
               <button onClick={handleSwap} style={{ position: "absolute", right: 14, top: -14, width: 28, height: 28, borderRadius: "50%", border: `1px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.08)" }}>↕</button>
             </div>
-            <div style={{ display: "flex", alignItems: "center", padding: "11px 14px", gap: 10 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 2, background: COLOR_DEST, flexShrink: 0 }} />
-              <input value={destInput} onChange={e => setDestInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSearch()} placeholder="도착지 주소 입력" style={{ flex: 1, border: "none", outline: "none", fontSize: 13, color: COLOR_TEXT_MAIN, background: "transparent", fontFamily: "'Noto Sans KR', sans-serif" }} />
-            </div>
+            <PlaceSearchInput
+              externalValue={destInput}
+              getDisplayValue={result => result.place_name}
+              onConfirm={result => {
+                onSetDest({ label: result.place_name, lat: Number(result.y), lng: Number(result.x) });
+                setDestInput(result.place_name);
+              }}
+              onFocusResult={result => {
+                if (kakaoMapRef.current) {
+                  kakaoMapRef.current.setCenter(new window.kakao.maps.LatLng(Number(result.y), Number(result.x)));
+                  kakaoMapRef.current.setLevel(3);
+                }
+              }}
+              isServicesReady={isServicesReady}
+              placeholder="도착지 검색"
+              dotStyle={{ borderRadius: 2, background: COLOR_DEST }}
+              rowStyle={{ padding: "11px 14px" }}
+              kakaoMapRef={kakaoMapRef}
+              markerColor="#ef4444"
+            />
           </div>
 
           {errorMsg && <div style={{ fontSize: 12, color: COLOR_DANGER, fontWeight: 600, paddingLeft: 4 }}>{errorMsg}</div>}
@@ -710,6 +739,31 @@ const RoutePanel: FC<RoutePanelProps> = ({
             </>
           )}
         </div>
+      )}
+
+      {/* 추천 경로 출발지/도착지 PlaceMarker */}
+      {recOriginPlace && (
+        <PlaceMarker
+          place={recOriginPlace}
+          isSelected={true}
+          isActive={true}
+          isDeemphasized={false}
+          kakaoMapRef={kakaoMapRef}
+          onSelectPlace={() => {}}
+          pinColor="#22c55e"
+          hideCategoryIcon={true}
+        />
+      )}
+      {recDestPlace && (
+        <PlaceMarker
+          place={recDestPlace}
+          isSelected={true}
+          isActive={true}
+          isDeemphasized={false}
+          kakaoMapRef={kakaoMapRef}
+          onSelectPlace={() => {}}
+          pinColor={COLOR_DEST}
+        />
       )}
     </div>
   );

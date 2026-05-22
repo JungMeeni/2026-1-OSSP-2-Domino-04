@@ -55,14 +55,14 @@ interface TaDetailResponse {
 // Vite 프록시 경유 URL 생성
 const taUrl = (path: string) =>
   import.meta.env.DEV
-    ? `/vite-proxy/tripadvisor/v1/${path}`
+    ? `/vite-proxy/tripadvisor/api/v1/${path}`
     : `${import.meta.env.VITE_BACKEND_URL}/api/tripadvisor/${path}`;
 
 /**
  * 장소명 + 좌표로 Tripadvisor location_id 조회
  * latLong 힌트를 함께 보내 정확도 향상
  */
-const fetchTaLocationId = async (
+export const fetchTaLocationId = async (
   placeName: string,
   lat:       number,
   lng:       number,
@@ -86,7 +86,7 @@ const fetchTaLocationId = async (
 /**
  * location_id로 Tripadvisor Details에서 평점·리뷰 수 조회
  */
-const fetchTaDetail = async (
+export const fetchTaDetail = async (
   locationId: string,
 ): Promise<{ rating: number; reviews: number } | null> => {
   try {

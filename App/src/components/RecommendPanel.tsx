@@ -1,14 +1,18 @@
 // ═══════════════════════════════════════════════════════════
+
 // RecommendPanel — 추천 경로 패널
+
 // [CHANGED] 경로 탐색 기능 통합
 //   - 추천 장소들을 출발지~경유지~도착지로 설정
 //   - 카카오 Directions API로 실제 경로 폴리라인 지도에 표시
 //   - 거리/시간/요금/교통혼잡도 결과 카드 표시
+
 // ═══════════════════════════════════════════════════════════
 
-import { type FC, useState, useCallback } from "react";
-import type { Category, DirectionsResponse, RouteResult } from "../types/type";
+import { type FC, useState, useCallback, useMemo } from "react";
+import type { Category, DirectionsResponse, RouteResult, Place } from "../types/type";
 import type { RecommendedRoute, RecommendedPlace } from "../hooks/Userecommendedroute";
+import PlaceMarker from "./PlaceMarker";
 import type { KakaoMapInstance, KakaoOverlay, KakaoPolyline } from "../types/type_kakao";
 import {
   COLOR_PRIMARY, COLOR_PRIMARY_LIGHT, COLOR_SURFACE,
@@ -85,8 +89,6 @@ const drawRouteOnMap = (
   polylineListRef: React.MutableRefObject<KakaoPolyline[]>,
   overlayListRef:  React.MutableRefObject<KakaoOverlay[]>,
   places:      RecommendedPlace[],
-  userLat:     number,
-  userLng:     number,
 ) => {
   if (!kakaoMapRef.current) return;
 
@@ -119,7 +121,7 @@ const drawRouteOnMap = (
     const el = document.createElement("div");
     el.style.cssText = "display:flex;flex-direction:column;align-items:center;";
     el.innerHTML = `
-      <div style="background:#fff;border-radius:8px;padding:3px 8px;margin-bottom:4px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.12);font-size:11px;font-weight:700;color:#1a1a1a;border:1.5px solid ${color};font-family:'Noto Sans KR',sans-serif;">${label}</div>
+      <div style="background:#fff;border-radius:8px;padding:3px 8px;margin-bottom:4px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.12);font-size:11px;font-weight:700;border:1.5px solid ${color};font-family:'Noto Sans KR',sans-serif;">${label}</div>
       <div style="width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${color};border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;">
         <span style="transform:rotate(45deg);font-size:12px;">${emoji}</span>
       </div>`;
@@ -130,12 +132,9 @@ const drawRouteOnMap = (
     overlayListRef.current.push(overlay);
   };
 
-  makePin(userLat, userLng, COLOR_ORIGIN, "🟢", "출발");
-  places.forEach((p, i) => {
-    const isLast = i === places.length - 1;
-    makePin(p.lat, p.lng, isLast ? COLOR_DEST : COLOR_PRIMARY,
-      isLast ? "🔴" : `${i + 1}`,
-      isLast ? p.name : `${i + 1}. ${p.name}`);
+  // 출발지·도착지는 PlaceMarker(React 컴포넌트)로 렌더링하므로 경유지만 처리
+  places.slice(0, -1).forEach((p, i) => {
+    makePin(p.lat, p.lng, COLOR_PRIMARY, `${i + 1}`, `${i + 1}. ${p.name}`);
   });
 
   // 지도 범위 자동 맞춤
@@ -276,6 +275,11 @@ const RecommendPanel: FC<RecommendPanelProps> = ({
   const [routeError,     setRouteError]     = useState<string | null>(null);
   const [routeDrawn,     setRouteDrawn]     = useState<boolean>(false);
 
+  const originPlace = useMemo<Place>(() => ({
+    id: -1, name: "출발", category: "명소", rating: 0, reviews: 0,
+    district: "", lat: userLat, lng: userLng, distance: 0,
+  }), [userLat, userLng]);
+
   // 경로 탐색 실행
   const handleDrawRoute = useCallback(async () => {
     if (!route) return;
@@ -286,7 +290,7 @@ const RecommendPanel: FC<RecommendPanelProps> = ({
     try {
       const result = await fetchRecommendRoute(route.places, userLat, userLng);
       setRouteResult(result);
-      drawRouteOnMap(result, kakaoMapRef, polylineListRef, overlayListRef, route.places, userLat, userLng);
+      drawRouteOnMap(result, kakaoMapRef, polylineListRef, overlayListRef, route.places);
       setRouteDrawn(true);
     } catch (e) {
       setRouteError((e as Error).message);
@@ -344,6 +348,26 @@ const RecommendPanel: FC<RecommendPanelProps> = ({
 
   return (
     <div style={{ padding: "16px 16px 32px" }}>
+      {routeDrawn && route && (
+        <>
+          <PlaceMarker
+            place={originPlace}
+            isSelected isActive isDeemphasized={false}
+            kakaoMapRef={kakaoMapRef}
+            onSelectPlace={() => {}}
+            pinColor="#16a34a"
+            hideCategoryIcon
+          />
+          <PlaceMarker
+            place={route.places[route.places.length - 1]}
+            isSelected isActive isDeemphasized={false}
+            kakaoMapRef={kakaoMapRef}
+            onSelectPlace={(p) => { if (p) onSelectPlace(p as RecommendedPlace); }}
+            pinColor={COLOR_DEST}
+            hideCategoryIcon
+          />
+        </>
+      )}
 
       {/* 요약 헤더 */}
       <div style={{ background: COLOR_PRIMARY_LIGHT, borderRadius: 14, padding: "14px 16px", marginBottom: 16, border: `1.5px solid ${COLOR_PRIMARY}30`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>

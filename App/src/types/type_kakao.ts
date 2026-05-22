@@ -15,3 +15,24 @@ export type KakaoGeocoder = {
     callback: (result: Array<{ y: string; x: string; address_name: string }>, status: string) => void,
   ) => void;
 };
+
+export type KakaoPlaceSearchResult = {
+  id:                string;
+  place_name:        string;
+  category_name:     string;
+  address_name:      string;
+  road_address_name: string;
+  phone:             string;
+  x:                 string;
+  y:                 string;
+  place_url:         string;
+  distance:          string;
+};
+
+export type KakaoPlaces = {
+  keywordSearch: (
+    keyword:  string,
+    callback: (result: KakaoPlaceSearchResult[], status: string) => void,
+    options?: { location?: KakaoLatLng; radius?: number; size?: number },
+  ) => void;
+};

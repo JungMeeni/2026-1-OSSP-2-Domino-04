@@ -1,6 +1,24 @@
 // ═══════════════════════════════════════════════════════════
-// RouteScreen — 지도 풀스크린 + FAB + 하프 바텀 시트
-// [CHANGED] recommend + route 탭 → route 탭 하나로 통합
+// RouteScreen — 앱 루트 화면: 풀스크린 지도 + FAB + 바텀 시트
+//
+// [구조]
+//   풀스크린 카카오 지도 위에 아래 레이어가 쌓인다:
+//     - 상단 검색창 (장소 키워드 검색 + 드롭다운 + 현위치 버튼)
+//     - FAB (+버튼) → "주변 탐색" / "경로 탐색" 메뉴 펼침
+//     - 하프/풀 바텀 시트 (드래그 리사이즈)
+//
+//   탭별 바텀 시트 내용:
+//     nearby — 반경 선택 + PlaceCard 목록 (NearByMap 지도 오버레이 연동)
+//     route  — RoutePanel (추천 경로 + 직접 입력 통합)
+//
+// [Google 로그인]
+//   @react-oauth/google 사용. 프로필 이미지를 검색창 우측에 표시
+//
+// [내부 훅]
+//   useUserLocation     — geolocation으로 현위치 취득
+//   useKakaoNearby      — 반경 내 장소 목록 fetch
+//   useRecommendedRoute — 추천 경로 fetch
+//   usePlaceSearch      — 검색창 상태 관리
 // ═══════════════════════════════════════════════════════════
 
 import { useState, useRef, useEffect, useCallback, type FC } from "react";
@@ -12,6 +30,7 @@ import type {
 import type {
   KakaoLatLng, KakaoLatLngBounds, KakaoMapInstance,
   KakaoCircle, KakaoGeocoder, KakaoMarker, KakaoOverlay, KakaoPolyline,
+  KakaoPlaceSearchResult, KakaoPlaces,
 } from "../types/type_kakao";
 import {
   COLOR_BG, COLOR_BORDER, COLOR_INACTIVE,
@@ -24,6 +43,10 @@ import { useRecommendedRoute } from "../hooks/Userecommendedroute";
 import PlaceCard  from "./PlaceCard";
 import NearbyMap  from "./NearByMap";
 import RoutePanel from "./RoutePanel";
+import PlaceMarker from "./PlaceMarker";
+import { kakaoResultToPlace } from "../utils/Utils";
+import { usePlaceSearch } from "../hooks/UsePlaceSearch";
+import { fetchTaLocationId, fetchTaDetail } from "../hooks/Usekakaonearby";
 
 // ═══════════════════════════════════════════════════════════
 // CONSTANTS
@@ -102,7 +125,7 @@ declare global {
         Size:          new (w: number, h: number) => object;
         services: {
           Geocoder: new () => KakaoGeocoder;
-          Places:   new () => object;
+          Places:   new () => KakaoPlaces;
           Status:   { OK: string };
           SortBy:   { DISTANCE: string };
         };
@@ -142,11 +165,12 @@ const RouteScreen: FC = () => {
   const [activeTab,  setActiveTab]  = useState<Tab | null>(null);
   const [sheetState, setSheetState] = useState<SheetState>("hidden");
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [googleUser,  setGoogleUser]  = useState<GoogleUserProfile | null>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleUserProfile | null>(null);
 
-  const [selectedRadiusIdx, setSelectedRadiusIdx] = useState<number>(1);
-  const [selectedPlace,     setSelectedPlace]     = useState<Place | null>(null);
+  const [selectedRadiusIdx,    setSelectedRadiusIdx]    = useState<number>(1);
+  const [selectedPlace,        setSelectedPlace]        = useState<Place | null>(null);
+  const [confirmedSearchPlace, setConfirmedSearchPlace] = useState<Place | null>(null);
+  const [searchRatings,        setSearchRatings]        = useState<Record<string, number>>({});
 
   const [routeState, setRouteState] = useState<RouteState>({
     origin: null, destination: null, result: null, isLoading: false, errorMsg: "",
@@ -251,6 +275,47 @@ const RouteScreen: FC = () => {
     } else if (sheetState === "full" && delta > DRAG_THRESHOLD) setSheetState("half");
   }, [sheetState, handleCloseSheet]);
 
+  const searchRatingsRef = useRef(searchRatings);
+  useEffect(() => { searchRatingsRef.current = searchRatings; }, [searchRatings]);
+
+  const onSearchConfirm = useCallback((result: KakaoPlaceSearchResult) => {
+    const place = { ...kakaoResultToPlace(result), rating: searchRatingsRef.current[result.id] ?? 0 };
+    setSelectedPlace(place);
+    setConfirmedSearchPlace(place);
+  }, []);
+
+  const onSearchFocus = useCallback((result: KakaoPlaceSearchResult) => {
+    if (kakaoMapRef.current && isMapReady) {
+      kakaoMapRef.current.setCenter(new window.kakao.maps.LatLng(parseFloat(result.y), parseFloat(result.x)));
+      kakaoMapRef.current.setLevel(3);
+    }
+  }, [isMapReady]);
+
+  const {
+    query:        searchQuery,
+    setQuery:     setSearchQuery,
+    results:      searchResults,
+    showDropdown,  setShowDropdown,
+    focusedResult: focusedSearchResult,
+    handleSelect:  handleSelectSearchResult,
+    handleClear:   handleClearSearch,
+  } = usePlaceSearch({ isServicesReady, onConfirm: onSearchConfirm, onFocusResult: onSearchFocus });
+
+  // 검색 결과가 바뀔 때마다 각 장소의 평점을 비동기로 fetch
+  useEffect(() => {
+    if (searchResults.length === 0) { setSearchRatings({}); return; }
+    let cancelled = false;
+    setSearchRatings({});
+    searchResults.slice(0, 10).forEach(async result => {
+      const locationId = await fetchTaLocationId(result.place_name, parseFloat(result.y), parseFloat(result.x));
+      if (cancelled || !locationId) return;
+      const detail = await fetchTaDetail(locationId);
+      if (cancelled || !detail || detail.rating <= 0) return;
+      setSearchRatings(prev => ({ ...prev, [result.id]: detail.rating }));
+    });
+    return () => { cancelled = true; };
+  }, [searchResults]);
+
   const handleSelectPlace  = (place: Place | null) => setSelectedPlace(prev => prev?.id === place?.id ? null : place);
   const handleSelectRadius = (idx: number) => { setSelectedRadiusIdx(idx); setSelectedPlace(null); };
   const handleSetOrigin    = (p: RoutePoint | null) => setRouteState(prev => ({ ...prev, origin: p }));
@@ -265,25 +330,100 @@ const RouteScreen: FC = () => {
     <div style={{ position: "fixed", inset: 0, fontFamily: "'Noto Sans KR', sans-serif", background: "#000" }}>
       <div ref={mapElRef} style={{ position: "absolute", inset: 0 }} />
 
-      {/* 검색창 */}
-      <div style={{ position: "absolute", top: 16, left: 16, right: 16, zIndex: 30, background: "rgba(255,255,255,0.96)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 2px 16px rgba(0,0,0,0.12)", display: "flex", alignItems: "center", gap: 10, padding: "10px 14px" }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLOR_TEXT_SUB} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-          <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="22" y2="22" />
-        </svg>
-        <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="장소, 주소를 검색하세요" style={{ flex: 1, border: "none", outline: "none", fontSize: 14, color: COLOR_TEXT_MAIN, background: "transparent", fontFamily: "'Noto Sans KR', sans-serif" }} />
-        {searchQuery.length > 0 && (
-          <div onClick={() => setSearchQuery("")} style={{ width: 20, height: 20, borderRadius: "50%", background: COLOR_INACTIVE, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 700 }}>✕</div>
-        )}
-        <div style={{ width: 1, height: 18, background: COLOR_BORDER, flexShrink: 0 }} />
-        <div onClick={() => googleUser ? handleGoogleLogout() : handleGoogleLogin()} style={{ width: 32, height: 32, borderRadius: "50%", background: googleUser ? COLOR_BG : "#fff", border: `1px solid ${COLOR_BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, overflow: "hidden" }}>
-          {googleUser ? <img src={googleUser.picture} alt={googleUser.name} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} /> : <IconGoogle />}
-        </div>
-        <div onClick={handleMoveToCurrentLoc} style={{ width: 32, height: 32, borderRadius: "50%", background: isLocating ? COLOR_BG : `${COLOR_USER_PIN}18`, border: `1px solid ${isLocating ? COLOR_BORDER : COLOR_USER_PIN}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: isLocating ? "default" : "pointer", flexShrink: 0 }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isLocating ? COLOR_TEXT_SUB : COLOR_USER_PIN} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><circle cx="12" cy="12" r="8" strokeOpacity="0.25" />
+      {/* 검색창 + 드롭다운 래퍼 */}
+      <div style={{ position: "absolute", top: 16, left: 16, right: 16, zIndex: 30 }}>
+        <div style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 2px 16px rgba(0,0,0,0.12)", display: "flex", alignItems: "center", gap: 10, padding: "10px 14px" }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLOR_TEXT_SUB} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="22" y2="22" />
           </svg>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => { setSearchQuery(e.target.value); if (e.target.value) setConfirmedSearchPlace(null); }}
+            onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
+            onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+            placeholder="장소, 주소를 검색하세요"
+            style={{ flex: 1, border: "none", outline: "none", fontSize: 14, color: COLOR_TEXT_MAIN, background: "transparent", fontFamily: "'Noto Sans KR', sans-serif" }}
+          />
+          {searchQuery.length > 0 && (
+            <div onClick={() => { handleClearSearch(); setConfirmedSearchPlace(null); }} style={{ width: 20, height: 20, borderRadius: "50%", background: COLOR_INACTIVE, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 700 }}>✕</div>
+          )}
+          <div style={{ width: 1, height: 18, background: COLOR_BORDER, flexShrink: 0 }} />
+          <div onClick={() => googleUser ? handleGoogleLogout() : handleGoogleLogin()} style={{ width: 32, height: 32, borderRadius: "50%", background: googleUser ? COLOR_BG : "#fff", border: `1px solid ${COLOR_BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, overflow: "hidden" }}>
+            {googleUser ? <img src={googleUser.picture} alt={googleUser.name} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} /> : <IconGoogle />}
+          </div>
+          <div onClick={handleMoveToCurrentLoc} style={{ width: 32, height: 32, borderRadius: "50%", background: isLocating ? COLOR_BG : `${COLOR_USER_PIN}18`, border: `1px solid ${isLocating ? COLOR_BORDER : COLOR_USER_PIN}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: isLocating ? "default" : "pointer", flexShrink: 0 }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isLocating ? COLOR_TEXT_SUB : COLOR_USER_PIN} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><circle cx="12" cy="12" r="8" strokeOpacity="0.25" />
+            </svg>
+          </div>
         </div>
+
+        {/* 장소 키워드 검색 결과 드롭다운 */}
+        {showDropdown && searchResults.length > 0 && (
+          <div style={{ marginTop: 6, background: "rgba(255,255,255,0.98)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 4px 20px rgba(0,0,0,0.14)", overflow: "hidden", maxHeight: 280, overflowY: "auto" }}>
+            {searchResults.map((result, i) => {
+              const isFocused = focusedSearchResult?.id === result.id;
+              return (
+                <div
+                  key={result.id}
+                  onMouseDown={e => { e.preventDefault(); handleSelectSearchResult(result); }}
+                  style={{
+                    padding: "10px 14px",
+                    borderBottom: i < searchResults.length - 1 ? `1px solid ${COLOR_BORDER}` : "none",
+                    cursor: "pointer",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    background: isFocused ? `${COLOR_PRIMARY}0d` : "transparent",
+                    boxShadow: isFocused ? `inset 0 0 0 2px ${COLOR_PRIMARY}` : "none",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: isFocused ? COLOR_PRIMARY : COLOR_TEXT_MAIN }}>{result.place_name}</span>
+                    {!!searchRatings[result.id] && (
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#f59a00", background: "#fff8ed", borderRadius: 6, padding: "1px 6px", border: "1px solid #f7d48a" }}>⭐ {searchRatings[result.id].toFixed(1)}</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: COLOR_TEXT_SUB }}>{result.road_address_name || result.address_name}</div>
+                  {result.category_name && (
+                    <div style={{ fontSize: 11, color: COLOR_PRIMARY }}>{result.category_name.split(" > ").pop()}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      {/* 장소 키워드 검색 결과 지도 오버레이 */}
+      {searchResults.length > 0
+        ? searchResults.map((result) => {
+            const place = { ...kakaoResultToPlace(result), rating: searchRatings[result.id] ?? 0 };
+            return (
+              <PlaceMarker
+                key={result.id}
+                place={place}
+                isSelected={focusedSearchResult?.id === result.id}
+                isActive={true}
+                isDeemphasized={focusedSearchResult?.id !== result.id}
+                kakaoMapRef={kakaoMapRef}
+                onSelectPlace={handleSelectPlace}
+              />
+            );
+          })
+        : confirmedSearchPlace && (
+            <PlaceMarker
+              key={confirmedSearchPlace.id}
+              place={confirmedSearchPlace}
+              isSelected={true}
+              isActive={true}
+              isDeemphasized={false}
+              kakaoMapRef={kakaoMapRef}
+              onSelectPlace={() => setConfirmedSearchPlace(null)}
+            />
+          )
+      }
 
       {/* 지도 오버레이 */}
       {activeTab === "nearby" && (
@@ -390,6 +530,7 @@ const RouteScreen: FC = () => {
               recIsLoading={recIsLoading}
               recError={recError}
               recRefetch={recRefetch}
+              isServicesReady={isServicesReady}
             />
           )}
         </div>
