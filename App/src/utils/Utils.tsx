@@ -1,4 +1,26 @@
-import type { Place, PlaceData } from "../types/type";
+import type { Place, PlaceData, Category } from "../types/type";
+import type { KakaoPlaceSearchResult } from "../types/type_kakao";
+
+const mapKakaoCategory = (categoryName: string): Category => {
+  if (categoryName.includes("카페"))                              return "카페";
+  if (categoryName.includes("갤러리") || categoryName.includes("미술")) return "갤러리";
+  if (categoryName.includes("공원"))                             return "공원";
+  if (categoryName.includes("문화"))                             return "문화";
+  if (categoryName.includes("거리") || categoryName.includes("쇼핑")) return "거리";
+  return "명소";
+};
+
+export const kakaoResultToPlace = (result: KakaoPlaceSearchResult): Place => ({
+  id:       Number(result.id),
+  name:     result.place_name,
+  category: mapKakaoCategory(result.category_name),
+  rating:   0,
+  reviews:  0,
+  district: result.address_name,
+  lat:      Number(result.y),
+  lng:      Number(result.x),
+  distance: Number(result.distance),
+});
 
 /* 두 지점 간의 거리 계산 (Haversine 공식) */
 export const calcDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {

@@ -1,11 +1,29 @@
 // ═══════════════════════════════════════════════════════════
-// RouteMap — 경로 탐색 결과를 지도에 렌더링
+// RouteMap — 경로 탐색 결과를 지도에 렌더링하는 헤드리스 컴포넌트
+//
+// [구조]
+//   - DOM 노드를 반환하지 않고 카카오 지도 오버레이만 제어
+//   - routeState 변경 시 기존 폴리라인 제거 후 재렌더링
+//
+// [폴리라인]
+//   - API 응답 roads의 vertexes([lng, lat, ...] 쌍)를 파싱
+//   - traffic_state 값에 따라 TRAFFIC_COLOR_MAP 색상 적용
+//
+// [지도 범위 자동 맞춤]
+//   result 있음   — 전체 road 좌표로 bounds 계산 (padding 60px)
+//   result 없음   — origin + destination 두 점으로 bounds 계산
+//   origin만 있음 — 해당 좌표로 지도 중심 이동
+//
+// [Props]
+//   routeState  — 출발지/도착지/결과/로딩 상태를 담은 RouteState
+//   kakaoMapRef — 카카오 지도 인스턴스 ref
+//   isMapReady  — 지도 초기화 완료 여부
 // ═══════════════════════════════════════════════════════════
 
 import { type FC, useEffect, useRef } from "react";
 import type { RouteState } from "../types/type";
-import type { KakaoLatLng, KakaoMapInstance, KakaoOverlay, KakaoPolyline } from "../types/type_kakao";
-import { COLOR_DEST, COLOR_ORIGIN, COLOR_TEXT_MAIN, TRAFFIC_COLOR_MAP } from "../colors";
+import type { KakaoLatLng, KakaoMapInstance, KakaoPolyline } from "../types/type_kakao";
+import { TRAFFIC_COLOR_MAP } from "../colors";
 
 
 interface RouteMapProps {
@@ -15,38 +33,18 @@ interface RouteMapProps {
 }
 
 const RouteMap: FC<RouteMapProps> = ({ routeState, kakaoMapRef, isMapReady }) => {
-  const pinOverlayListRef  = useRef<KakaoOverlay[]>([]);
-  const polylineListRef    = useRef<KakaoPolyline[]>([]);
+  const polylineListRef = useRef<KakaoPolyline[]>([]);
 
   useEffect(() => {
     if (!isMapReady || !kakaoMapRef.current) return;
 
     // 기존 레이어 정리
-    pinOverlayListRef.current.forEach(o => o.setMap(null));
     polylineListRef.current.forEach(p => p.setMap(null));
-    pinOverlayListRef.current = [];
-    polylineListRef.current   = [];
+    polylineListRef.current = [];
 
     const { origin, destination, result } = routeState;
 
-    // [UTIL] 핀 오버레이 생성 헬퍼
-    const makePinOverlay = (lat: number, lng: number, color: string, label: string): KakaoOverlay => {
-      const el = document.createElement("div");
-      el.style.cssText = "display:flex;flex-direction:column;align-items:center;";
-      el.innerHTML = `
-        <div style="background:#fff;border-radius:8px;padding:3px 8px;margin-bottom:4px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.12);font-size:11px;font-weight:700;color:${COLOR_TEXT_MAIN};border:1.5px solid ${color};font-family:'Noto Sans KR',sans-serif;">${label}</div>
-        <div style="width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${color};border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;">
-          <span style="transform:rotate(45deg);font-size:12px;line-height:1">${label === "출발" ? "🟢" : "🔴"}</span>
-        </div>`;
-      const overlay = new window.kakao.maps.CustomOverlay({
-        map: kakaoMapRef.current!, position: new window.kakao.maps.LatLng(lat, lng),
-        content: el, yAnchor: 1.1, zIndex: 15,
-      });
-      return overlay;
-    };
 
-    if (origin)      pinOverlayListRef.current.push(makePinOverlay(origin.lat, origin.lng, COLOR_ORIGIN, "출발"));
-    if (destination) pinOverlayListRef.current.push(makePinOverlay(destination.lat, destination.lng, COLOR_DEST, "도착"));
 
     // [RENDER] API 응답 roads의 vertexes로 교통 혼잡도별 폴리라인 그리기
     // vertexes 포맷: [lng0, lat0, lng1, lat1, ...] — 2개씩 쌍으로 파싱

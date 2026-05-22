@@ -32,6 +32,8 @@ const ALL_KAKAO_CATS: { code: string; category: Category }[] = [
 export interface RecommendedPlace extends Place {
   score:  number;
   taUrl?: string;
+  _ratingScore: number;
+  _detour: number;
 }
 
 export interface RecommendedRoute {
@@ -44,6 +46,7 @@ export interface RecommendedRoute {
   roads:         RouteResult["roads"];   // 폴리라인용
   taxiFare:      number;
   tollFare:      number;
+  _ratingScore: number;
 }
 
 interface KakaoPlaceItem {
@@ -55,23 +58,31 @@ interface KakaoPlaceItem {
 
 const taUrl = (path: string) =>
   import.meta.env.DEV
-    ? `/vite-proxy/tripadvisor/v1/${path}`
+    ? `/vite-proxy/tripadvisor/api/v1/${path}`
     : `${import.meta.env.VITE_BACKEND_URL}/api/tripadvisor/${path}`;
 
+
+// [CONTENT API] Find Search: name(장소명), lat(위도), lng(경도) 이용해 tripadvisor 장소 고유 id (location_id) 가져오기
 const fetchTaLocationId = async (name: string, lat: number, lng: number): Promise<string | null> => {
   try {
     const params = new URLSearchParams({ searchQuery: name, latLong: `${lat},${lng}`, language: "ko", key: TA_API_KEY });
-    const res    = await fetch(`${taUrl("location/search")}?${params}`);
-    if (!res.ok) return null;
+    const url = `${taUrl("location/search")}?${params}`;
+    const res    = await fetch(url);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.warn(`[TA] location/search ${res.status}`, { name, url, body: text });
+      return null;
+    }
     const json   = await res.json();
     return json.data?.[0]?.location_id ?? null;
-  } catch { return null; }
+  } catch (e) { console.warn("[TA] location/search exception", e); return null; }
 };
 
-const fetchTaDetail = async (id: string): Promise<{ rating: number; reviews: number; webUrl: string } | null> => {
+// [CONTENT API] Location Details: 앞서 구한 장소 고유 id (location_id)를 이용해 평점, 리뷰, 웹페이지 url 가져오기
+const fetchTaDetail = async (location_id: string): Promise<{ rating: number; reviews: number; webUrl: string } | null> => {
   try {
     const params = new URLSearchParams({ language: "ko", key: TA_API_KEY });
-    const res    = await fetch(`${taUrl(`location/${id}/details`)}?${params}`);
+    const res    = await fetch(`${taUrl(`location/${location_id}/details`)}?${params}`);
     if (!res.ok) return null;
     const json   = await res.json();
     return { rating: parseFloat(json.rating ?? "0"), reviews: parseInt(json.num_reviews ?? "0", 10), webUrl: json.web_url ?? "" };
@@ -257,14 +268,16 @@ export const useRecommendedRoute = ({
       // 상위 20개만 Tripadvisor 조회 (API 호출 최소화)
       const candidates = items.slice(0, 20);
 
+      // 장소의 location_id 가져오기
       const idResults = await Promise.allSettled(
         candidates.map(({ item }) => fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x)))
-      );
+      ); console.log(idResults);
       if (cancelledRef.current) return;
 
+      // location_id를 이용해 장소별 평점, 리뷰 수, tripadvisor detail url get
       const detailResults = await Promise.allSettled(
         idResults.map(r => r.status === "fulfilled" && r.value ? fetchTaDetail(r.value) : Promise.resolve(null))
-      );
+      ); console.log(detailResults);
       if (cancelledRef.current) return;
 
       // EnrichedPlace 조립 — 코스별 선정에 필요한 _ratingScore, _distance 포함
