@@ -1,7 +1,0 @@
-node_modules
-npm-debug.log
-.git
-*.json
-!package.json
-.env
-!src/services/config/firebase-admin-key.json
