@@ -16,7 +16,7 @@ import type { Place, Category } from "../types/type";
 import { COLOR_PRIMARY, COLOR_PRIMARY_LIGHT, COLOR_SURFACE, COLOR_BORDER, COLOR_BG, COLOR_TEXT_MAIN, COLOR_TEXT_SUB } from "../colors";
 
 const CATEGORY_ICON: Record<Category, string> = {
-  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍",
+  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍", 식당: "🍽️"
 };
 
 interface PlaceCardProps {
@@ -33,8 +33,8 @@ const PlaceCard: FC<PlaceCardProps> = ({ place, isSelected, onSelect }) => (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN, marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{place.name}</div>
       <div style={{ display: "flex", gap: 8, fontSize: 11, color: COLOR_TEXT_SUB }}>
-        <span>⭐ {place.rating}</span><span>·</span>
-        <span>리뷰 {place.reviews.toLocaleString()}</span><span>·</span>
+        {place.rating > 0 && <><span>⭐ {place.rating.toFixed(1)}</span><span>·</span></>}
+        {place.reviews > 0 && <><span>리뷰 {place.reviews.toLocaleString()}</span><span>·</span></>}
         <span style={{ color: COLOR_PRIMARY, fontWeight: 600 }}>{place.distance}m</span>
       </div>
     </div>

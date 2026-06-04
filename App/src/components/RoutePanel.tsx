@@ -26,33 +26,27 @@ import {
 } from "../colors";
 import { formatDistance, formatDuration } from "../utils/Utils";
 import type { RecommendedPlace, RecommendedRoute } from "../hooks/Userecommendedroute";
+import { sendRouteFeedback } from "../hooks/Userecommendedroute";
 import { fetchTaDetail, fetchTaLocationId } from "../hooks/Usekakaonearby";
 
 // ── [CONFIG] ──────────────────────────────────────────────
-
-const TA_API_KEY = import.meta.env.VITE_TRIPADVISOR_API_KEY as string;
 
 const WAYPOINT_CATS: { code: string; category: Category }[] = [
   { code: "AT4", category: "명소" },
   { code: "CT1", category: "문화" },
   { code: "CE7", category: "카페" },
+  { code: "FD6", category: "식당" },
+  { code: "PK6", category: "공원" },
 ];
 
 const CATEGORY_ICON: Record<Category, string> = {
-  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍",
+  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍", 식당: "🍽️"
 };
 
 const CATEGORY_COLOR: Record<Category, string> = {
   카페: "#b45309", 갤러리: "#7c3aed", 공원: "#16a34a",
-  명소: "#1d4ed8", 문화: "#0e7490",  거리: "#be185d",
+  명소: "#1d4ed8", 문화: "#0e7490",  거리: "#be185d", 식당: "#d97706",
 };
-
-// ── [UTIL] ────────────────────────────────────────────────
-
-const taUrl = (path: string) =>
-  import.meta.env.DEV
-    ? `/vite-proxy/tripadvisor/api/v1/${path}`
-    : `${import.meta.env.VITE_BACKEND_URL}/api/tripadvisor/${path}`;
 
 /**
  * TripAdvisor API 요청을 배치 단위로 나눠서 순차 실행한다.
@@ -245,38 +239,164 @@ interface RoutePanelProps {
   recIsLoading:    boolean;
   recError:        string | null;
   recRefetch:      () => void;
+  // [NAV] 안내 시작/취소
+  isNavigating:       boolean;
+  onStartNavigation:  (route: RecommendedRoute) => void;
+  onCancelNavigation: () => void;
 }
 
 // ── [직접 입력용 경로 후보 3개 생성] ─────────────────────
 //
-// 경유지 최대 5개, 평점 상위 풀에서 선정 방식을 달리해 진짜 다른 3개 경로 생성
-//
-// A코스 — 순수 고평점 TOP5
-//   평점 점수(rating × log(reviews))만으로 정렬, 상위 5개 선택
-//   → 가장 유명하고 검증된 장소 위주
-//
-// B코스 — 거리 효율 TOP5
-//   출발↔도착 사이 선분과의 수직거리(이탈도) 최소화 + 평점 보정
-//   → 돌아가지 않고 동선 효율이 높은 장소 위주
-//
-// C코스 — 카테고리 다양성 TOP5
-//   카테고리별 1위씩 먼저 채우고 나머지는 점수 순으로 채움
-//   → A·B와 최대한 다른 장소 조합
+// 카카오 장소 검색 + TripAdvisor 평점 보강 후
+// POST /api/route/recommend (ML 서버 MLP + Held-Karp+2-opt) 에 위임.
+// 반환된 3개 코스 각각 Kakao Directions 호출 (출발지→경유지→도착지).
 
-const MAX_WP = 5;
-const WEIGHT: Record<Category, number> = { 명소: 1.4, 문화: 1.3, 공원: 1.2, 카페: 1.1, 갤러리: 1.1, 거리: 1.0 };
+interface _BackendPlaceOutput {
+  id: string; name: string; category: string;
+  lat: number; lng: number; distance: number;
+  address: string; score: number; rating: number;
+  num_reviews: number; web_url: string;
+}
+interface _BackendCourse {
+  route_id: number; label: string; description: string;
+  emoji: string; places: _BackendPlaceOutput[];
+}
 
-/** 점(px,py)과 선분(ax,ay)→(bx,by) 사이의 수직거리 */
-const pointToSegmentDist = (
-  px: number, py: number,
-  ax: number, ay: number,
-  bx: number, by: number,
-): number => {
-  const dx = bx - ax; const dy = by - ay;
-  if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
+// ── [도보 경로] ───────────────────────────────────────────
+
+interface WalkingRouteData {
+  durationSec:   number;
+  distanceMeter: number;
+  coords:        { lat: number; lng: number }[];
+}
+
+const fetchWalkingRoute = async (
+  origin: RoutePoint,
+  dest:   RoutePoint,
+): Promise<WalkingRouteData | null> => {
+  try {
+    const res = await fetch("/api/tmap/pedestrian", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        startX:       String(origin.lng),
+        startY:       String(origin.lat),
+        endX:         String(dest.lng),
+        endY:         String(dest.lat),
+        reqCoordType: "WGS84GEO",
+        resCoordType: "WGS84GEO",
+        startName:    "S",
+        endName:      "E",
+        searchOption: "0",
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.features?.length) return null;
+
+    const totalTime     = data.features[0]?.properties?.totalTime     ?? 0;
+    const totalDistance = data.features[0]?.properties?.totalDistance ?? 0;
+
+    const coords: { lat: number; lng: number }[] = [];
+    for (const feature of data.features) {
+      if (feature.geometry?.type === "LineString") {
+        for (const coord of feature.geometry.coordinates as [number, number][])
+          coords.push({ lng: coord[0], lat: coord[1] });
+      }
+    }
+    if (coords.length < 2) return null;
+    return { durationSec: totalTime, distanceMeter: totalDistance, coords };
+  } catch {
+    return null;
+  }
 };
+
+// Haversine 직선 거리 (m)
+const _haversine = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const R = 6_371_000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+const WALK_MPS = 1.25; // 평균 도보 속도 4.5 km/h
+
+// 경유지가 있는 도보 경로 — 구간별 TMAP 호출, 실패 시 직선거리 추정으로 대체
+const fetchWalkingLegs = async (
+  pts: { lat: number; lng: number; label: string }[],
+): Promise<WalkingRouteData | null> => {
+  if (pts.length < 2) return null;
+  let totalTime = 0, totalDist = 0;
+  const coords: { lat: number; lng: number }[] = [];
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const from = pts[i];
+    const to   = pts[i + 1];
+    const leg  = await fetchWalkingRoute(
+      { lat: from.lat, lng: from.lng, label: from.label },
+      { lat: to.lat,   lng: to.lng,   label: to.label   },
+    );
+
+    if (leg) {
+      totalTime += leg.durationSec;
+      totalDist += leg.distanceMeter;
+      coords.push(...(i === 0 ? leg.coords : leg.coords.slice(1)));
+    } else {
+      // TMAP 실패(400·네트워크 등) → Haversine 직선 추정으로 대체
+      const dist = _haversine(from.lat, from.lng, to.lat, to.lng);
+      totalTime += dist / WALK_MPS;
+      totalDist += dist;
+      if (i === 0) coords.push({ lat: from.lat, lng: from.lng });
+      coords.push({ lat: to.lat, lng: to.lng });
+    }
+  }
+
+  return coords.length >= 2
+    ? { durationSec: Math.round(totalTime), distanceMeter: Math.round(totalDist), coords }
+    : null;
+};
+
+const drawWalkingRoute = (
+  coords:          WalkingRouteData["coords"],
+  waypoints:       { lat: number; lng: number; name: string }[],
+  kakaoMapRef:     React.MutableRefObject<KakaoMapInstance | null>,
+  polylineListRef: React.MutableRefObject<KakaoPolyline[]>,
+  overlayListRef:  React.MutableRefObject<KakaoOverlay[]>,
+) => {
+  if (!kakaoMapRef.current || coords.length < 2) return;
+  polylineListRef.current.forEach(p => p.setMap(null));
+  overlayListRef.current.forEach(o => o.setMap(null));
+  polylineListRef.current = []; overlayListRef.current = [];
+
+  const path = coords.map(c => new window.kakao.maps.LatLng(c.lat, c.lng));
+  polylineListRef.current.push(new window.kakao.maps.Polyline({
+    map: kakaoMapRef.current!, path,
+    strokeWeight: 5, strokeColor: "#3b82f6",
+    strokeOpacity: 0.9, strokeStyle: "solid",
+  }));
+
+  // 차량 경로와 동일하게 경유지 번호 핀 표시 (도보 테마 색상)
+  const WALK_PIN = "#3b82f6";
+  waypoints.forEach((p, i) => {
+    const el = document.createElement("div");
+    el.style.cssText = "display:flex;flex-direction:column;align-items:center;";
+    el.innerHTML = `
+      <div style="background:#fff;border-radius:8px;padding:3px 8px;margin-bottom:4px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.12);font-size:11px;font-weight:700;border:1.5px solid ${WALK_PIN};font-family:'Noto Sans KR',sans-serif;">${i + 1}. ${p.name}</div>
+      <div style="width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${WALK_PIN};border:2.5px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;">
+        <span style="transform:rotate(45deg);font-size:12px;color:#fff;font-weight:700;">${i + 1}</span>
+      </div>`;
+    overlayListRef.current.push(new window.kakao.maps.CustomOverlay({
+      map: kakaoMapRef.current!, content: el, yAnchor: 1.1, zIndex: 15,
+      position: new window.kakao.maps.LatLng(p.lat, p.lng),
+    }));
+  });
+
+  const bounds = new window.kakao.maps.LatLngBounds();
+  coords.forEach(c => bounds.extend(new window.kakao.maps.LatLng(c.lat, c.lng)));
+  kakaoMapRef.current!.setBounds(bounds, 60, 60, 60, 60);
+};
+
 
 const buildManualRoutes = async (
   origin: RoutePoint,
@@ -309,91 +429,123 @@ const buildManualRoutes = async (
 
   if (rawPlaces.length === 0) return [];
 
-  // ── Step 2: Tripadvisor 평점 보강
-  // 한 번에 모두 요청하면 429 rate limit에 걸리므로 fetchInBatches로 5개씩 나눠서 조회한다
-  const top       = rawPlaces.slice(0, 20);
-  const idResults = await fetchInBatches(
-    top.map(({ item }) => () => fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x))),
-  );
-  const detailResults = await fetchInBatches(
-    idResults.map(id => () => (id ? fetchTaDetail(id) : Promise.resolve(null))),
-  );
-
-  const enriched: RecommendedPlace[] = top.map(({ item, category }, i) => {
-    const d       = detailResults[i]; // fetchInBatches는 값 자체(T | null)를 반환한다
-    const rating  = d?.rating  ?? 0;
-    const reviews = d?.reviews ?? 0;
-    const dist    = parseInt(item.distance, 10);
-    // 기본 평점 점수 (평점 × 카테고리가중치 × log(리뷰수))
-    const ratingScore = rating > 0 ? rating * WEIGHT[category] * Math.log10(reviews + 1) : 0;
-    // 동선 이탈도 (출발↔도착 선분과의 거리, 작을수록 좋음)
-    const detour = pointToSegmentDist(
-      parseFloat(item.y), parseFloat(item.x),
-      origin.lat, origin.lng,
-      dest.lat,   dest.lng,
-    ) * 111000; // 도 → 미터 근사
-
-    return {
-      id: parseInt(item.id, 10), name: item.place_name, category,
-      rating, reviews,
-      score: ratingScore,          // A코스 기준
-      district: item.address_name.split(" ").slice(0, 2).join(" "),
-      lat: parseFloat(item.y), lng: parseFloat(item.x), distance: dist,
-      // 추가 필드 (선정 시에만 사용)
-      _detour: detour,
-      _ratingScore: ratingScore,
-    } as RecommendedPlace & { _detour: number; _ratingScore: number };
-  }) as (RecommendedPlace & { _detour: number; _ratingScore: number })[];
-
-  // 평점 있는 곳만 사용 (없으면 거리 가까운 순으로 대체)
-  const scored  = enriched.filter(p => p._ratingScore > 0);
-  const fallback = scored.length >= 3 ? scored : enriched;
-
-  // ── Step 3: 코스별 선정 로직
-  // [A] 순수 고평점 TOP5 — 평점 점수 내림차순
-  const selectA = (): RecommendedPlace[] =>
-    [...fallback]
-      .sort((a, b) => b._ratingScore - a._ratingScore)
-      .slice(0, MAX_WP);
-
-  // [B] 거리 효율 TOP5 — 이탈도 최소 + 평점 보정
-  //     정렬 기준: (이탈도 / 500m) - 평점점수  (작을수록 우선)
-  const selectB = (): RecommendedPlace[] =>
-    [...fallback]
-      .sort((a, b) => {
-        const scoreA = (a._detour / 500) - a._ratingScore;
-        const scoreB = (b._detour / 500) - b._ratingScore;
-        return scoreA - scoreB;
-      })
-      .slice(0, MAX_WP);
-
-  // [C] 카테고리 다양성 TOP5 — 카테고리별 최고점 1개씩, 나머지 점수 순
-  const selectC = (): RecommendedPlace[] => {
-    const byScore  = [...fallback].sort((a, b) => b._ratingScore - a._ratingScore);
-    const selected: RecommendedPlace[] = [];
-    const usedCats = new Set<Category>();
-    for (const p of byScore) {
-      if (selected.length >= MAX_WP) break;
-      if (!usedCats.has(p.category)) { usedCats.add(p.category); selected.push(p); }
-    }
-    for (const p of byScore) {
-      if (selected.length >= MAX_WP) break;
-      if (!selected.find(s => s.id === p.id)) selected.push(p);
-    }
-    return selected;
+  // ── Step 2: Tripadvisor 평점 보강 (localStorage 7일 캐시 적용)
+  // 추천 탭(Userecommendedroute.ts)과 동일한 ta_${id} 캐시 키를 공유하므로
+  // 추천 탭에서 이미 조회된 장소는 API 호출 없이 캐시에서 읽는다.
+  const TA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const readTaCache = (id: string): { rating: number; reviews: number } | undefined => {
+    try {
+      const raw = localStorage.getItem(`ta_${id}`);
+      if (!raw) return undefined;
+      const { data, ts } = JSON.parse(raw) as { data: { rating: number; reviews: number } | null; ts: number };
+      if (Date.now() - ts > TA_CACHE_TTL_MS) { localStorage.removeItem(`ta_${id}`); return undefined; }
+      // null로 저장된 실패 결과는 캐시 미스로 처리해 재시도
+      if (data === null) { localStorage.removeItem(`ta_${id}`); return undefined; }
+      return data;
+    } catch { return undefined; }
+  };
+  const writeTaCache = (id: string, data: { rating: number; reviews: number }) => {
+    try { localStorage.setItem(`ta_${id}`, JSON.stringify({ data, ts: Date.now() })); } catch { }
   };
 
-  const COURSES: { label: string; description: string; emoji: string; places: RecommendedPlace[] }[] = [
-    { label: "고평점 코스",    description: "Tripadvisor 평점 TOP 5 장소만 방문",      emoji: "⭐", places: selectA() },
-    { label: "동선 효율 코스", description: "돌아가지 않고 경로 위 평점 높은 장소 위주", emoji: "🗺", places: selectB() },
-    { label: "다양성 코스",    description: "카테고리별 1위씩 골고루 방문",              emoji: "🎨", places: selectC() },
-  ];
+  // 카테고리별 6개씩 균등 샘플링 (추천 탭의 PER_CAT=4 방식과 동일)
+  // 단순 slice(0,30)으로는 빠른 카테고리가 입력을 독점해 A코스 재료가 사라지는 문제 방지
+  const PER_CAT = 6;
+  const byCatMap = new Map<Category, typeof rawPlaces>();
+  for (const raw of rawPlaces) {
+    const arr = byCatMap.get(raw.category) ?? [];
+    arr.push(raw);
+    byCatMap.set(raw.category, arr);
+  }
+  const top = [...byCatMap.values()].flatMap(arr => arr.slice(0, PER_CAT));
 
-  // ── Step 4: Directions API 병렬 호출
+  const detailMap = new Map<string, { rating: number; reviews: number } | null | undefined>();
+  const needFetch: typeof top = [];
+  for (const rawPlace of top) {
+    const cached = readTaCache(rawPlace.item.id);
+    if (cached !== undefined) detailMap.set(rawPlace.item.id, cached);
+    else needFetch.push(rawPlace);
+  }
+  if (needFetch.length > 0) {
+    const idResults = await fetchInBatches(
+      needFetch.map(({ item }) => () => fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x))),
+    );
+    const detailResults = await fetchInBatches(
+      idResults.map(id => () => (id ? fetchTaDetail(id) : Promise.resolve(null))),
+    );
+    needFetch.forEach(({ item }, i) => {
+      const d = detailResults[i] ?? null;
+      // null(API 실패) 결과는 캐시하지 않아 다음 로드 시 재시도 가능하게 함
+      if (d !== null) writeTaCache(item.id, d);
+      detailMap.set(item.id, d);
+    });
+  }
+
+  // ── Step 3: ML 서버 PlaceInput 배열 조립
+  // item.distance 는 Kakao가 검색 중심(출발↔도착 중간점) 기준으로 반환한 거리.
+  // ML 서버 B코스는 "user_lat/lng(출발지)에서 가까운 맛집 우선" 채점에 쓰므로
+  // Haversine 으로 출발지 기준 실제 거리를 직접 계산해 덮어쓴다.
+  const placeInputs = top.map(({ item, category }) => {
+    const d        = detailMap.get(item.id) ?? null;
+    const placeLat = parseFloat(item.y);
+    const placeLng = parseFloat(item.x);
+    const distFromOrigin = Math.round(_haversine(origin.lat, origin.lng, placeLat, placeLng));
+    return {
+      id:          item.id,
+      name:        item.place_name,
+      category,
+      lat:         placeLat,
+      lng:         placeLng,
+      distance:    distFromOrigin,
+      address:     item.address_name,
+      rating:      d?.rating  ?? 0,
+      num_reviews: d?.reviews ?? 0,
+      web_url:     "",
+    };
+  });
+
+  // ── Step 4: ML 서버 경로 추천 (MLP 채점 + Held-Karp path + 2-opt path)
+  //    user_lat/lng = 출발지, dest_lat/lng = 도착지 → 경유지 순서가 일직선에 가깝게 최적화
+  let backendRoutes: _BackendCourse[] = [];
+  try {
+    const mlRes = await fetch("/api/route/recommend", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        user_lat: origin.lat, user_lng: origin.lng,
+        dest_lat: dest.lat,   dest_lng: dest.lng,
+        places: placeInputs,
+      }),
+    });
+    if (!mlRes.ok) throw new Error(`ML 서버 오류: ${mlRes.status}`);
+    const mlData: { routes: _BackendCourse[] } = await mlRes.json();
+    backendRoutes = mlData.routes ?? [];
+  } catch {
+    return [];
+  }
+
+  if (backendRoutes.length === 0) return [];
+
+  // ── Step 5: 각 코스별 Directions API (출발지 → ML 경유지 순서 → 도착지)
   const results = await Promise.allSettled(
-    COURSES.map(async course => {
-      if (course.places.length === 0) throw new Error("경유지 없음");
-      const wps    = course.places.map(p => `${p.lng},${p.lat}`).join("|");
+    backendRoutes.map(async course => {
+      const orderedPlaces: RecommendedPlace[] = course.places.map(p => ({
+        id:           parseInt(p.id, 10),
+        name:         p.name,
+        category:     p.category as Category,
+        rating:       p.rating,
+        reviews:      p.num_reviews,
+        score:        p.score,
+        district:     p.address.split(" ").slice(0, 2).join(" "),
+        lat:          p.lat,
+        lng:          p.lng,
+        distance:     p.distance,
+        _ratingScore: p.score,
+        _detour:      0,
+      }));
+
+      if (orderedPlaces.length === 0) throw new Error("경유지 없음");
+      const wps = orderedPlaces.map(p => `${p.lng},${p.lat}`).join("|");
       const params = new URLSearchParams({
         origin:       `${origin.lng},${origin.lat}`,
         destination:  `${dest.lng},${dest.lat}`,
@@ -401,24 +553,23 @@ const buildManualRoutes = async (
         alternatives: "false",     road_details: "false",
         ...(wps ? { waypoints: wps } : {}),
       });
-      const res = await fetch(`${import.meta.env.VITE_KAKAO_DIRECTIONS_URL}?${params}`, {
-        headers: { Authorization: `KakaoAK ${import.meta.env.VITE_KAKAO_REST_API_KEY}` },
-      });
-      if (!res.ok) throw new Error(`Directions API 오류: ${res.status}`);
-      const data  = await res.json();
-      const route = data.routes?.[0];
+      const dirRes = await fetch(`/api/directions?${params}`);
+      if (!dirRes.ok) throw new Error(`Directions API 오류: ${dirRes.status}`);
+      const dirData = await dirRes.json();
+      const route   = dirData.routes?.[0];
       if (!route || route.result_code !== 0) throw new Error(route?.result_msg ?? "경로 없음");
 
       return {
         label:         course.label,
         description:   course.description,
         emoji:         course.emoji,
-        places:        course.places,
+        places:        orderedPlaces,
         totalDistance: route.summary.distance,
         totalDuration: route.summary.duration,
         roads:         route.sections.flatMap((s: any) => s.roads),
         taxiFare:      route.summary.fare.taxi,
         tollFare:      route.summary.fare.toll,
+        _ratingScore:  orderedPlaces.reduce((s, p) => s + p._ratingScore, 0) / (orderedPlaces.length || 1),
       } as RecommendedRoute;
     })
   );
@@ -432,6 +583,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
   routeState, onSetOrigin, onSetDest, onSetResult, onSetLoading, onSetError,
   userLat, userLng, isServicesReady, kakaoMapRef, polylineListRef, overlayListRef,
   recRoutes, recIsLoading, recError, recRefetch,
+  isNavigating, onStartNavigation, onCancelNavigation,
 }) => {
   const [panelTab,    setPanelTab]    = useState<"manual" | "recommend">("recommend");
   const [originInput, setOriginInput] = useState<string>("");
@@ -446,35 +598,106 @@ const RoutePanel: FC<RoutePanelProps> = ({
   const [manualError,       setManualError]        = useState<string | null>(null);
   const [selectedManualIdx, setSelectedManualIdx]  = useState<number | null>(null);
 
+  // 이동 수단 상태 (추천 / 직접 입력 탭 각각)
+  const [recTransportMode,    setRecTransportMode]    = useState<"car" | "walk">("car");
+  const [recWalkingData,      setRecWalkingData]      = useState<WalkingRouteData | null>(null);
+  const [recWalkLoading,      setRecWalkLoading]      = useState<boolean>(false);
+  const [manualTransportMode, setManualTransportMode] = useState<"car" | "walk">("car");
+  const [manualWalkingData,   setManualWalkingData]   = useState<WalkingRouteData | null>(null);
+  const [manualWalkLoading,   setManualWalkLoading]   = useState<boolean>(false);
+
   // 추천 경로 출발지/도착지 PlaceMarker 상태
   const [recOriginPlace, setRecOriginPlace] = useState<Place | null>(null);
   const [recDestPlace,   setRecDestPlace]   = useState<Place | null>(null);
 
-  // 현위치 기반 추천 경로 카드 선택 → 지도에 표시
+  // ── 추천 탭: 코스 선택 토글
   const handleSelectRoute = useCallback((idx: number) => {
+    if (selectedRouteIdx === idx) {
+      setSelectedRouteIdx(null);
+      setRecTransportMode("car"); setRecWalkingData(null);
+      polylineListRef.current.forEach(p => p.setMap(null));
+      overlayListRef.current.forEach(o => o.setMap(null));
+      polylineListRef.current = []; overlayListRef.current = [];
+      setRecOriginPlace(null); setRecDestPlace(null);
+      return;
+    }
     const route = recRoutes[idx];
     if (!route) return;
     setSelectedRouteIdx(idx);
+    setRecTransportMode("car"); setRecWalkingData(null);
     const dest = route.places[route.places.length - 1];
     setRecOriginPlace({ id: -1, name: "현재 위치", category: "명소", rating: 0, reviews: 0, district: "", lat: userLat, lng: userLng, distance: 0 });
     setRecDestPlace(dest ?? null);
     drawOnMap(route.roads, route.places.slice(0, -1), kakaoMapRef, polylineListRef, overlayListRef);
-  }, [recRoutes, userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef]);
+  }, [recRoutes, selectedRouteIdx, userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef]);
 
-  // 직접 입력 후보 경로 선택 → 지도에 표시
+  // ── 추천 탭: 이동 수단 전환
+  const handleRecTransport = useCallback(async (mode: "car" | "walk", route: RecommendedRoute) => {
+    setRecTransportMode(mode);
+    if (mode === "car") {
+      drawOnMap(route.roads, route.places.slice(0, -1), kakaoMapRef, polylineListRef, overlayListRef);
+      return;
+    }
+    if (recWalkingData) { drawWalkingRoute(recWalkingData.coords, route.places, kakaoMapRef, polylineListRef, overlayListRef); return; }
+    setRecWalkLoading(true);
+    const pts = [
+      { lat: userLat, lng: userLng, label: "현재 위치" },
+      ...route.places.map(p => ({ lat: p.lat, lng: p.lng, label: p.name })),
+    ];
+    const walking = await fetchWalkingLegs(pts);
+    setRecWalkLoading(false);
+    if (!walking) { setRecTransportMode("car"); drawOnMap(route.roads, route.places.slice(0, -1), kakaoMapRef, polylineListRef, overlayListRef); return; }
+    setRecWalkingData(walking);
+    drawWalkingRoute(walking.coords, route.places, kakaoMapRef, polylineListRef, overlayListRef);
+  }, [recWalkingData, userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef]);
+
+  // ── 직접 입력 탭: 코스 선택 토글
   const handleSelectManualRoute = useCallback((idx: number) => {
+    if (selectedManualIdx === idx) {
+      setSelectedManualIdx(null);
+      setManualTransportMode("car"); setManualWalkingData(null);
+      polylineListRef.current.forEach(p => p.setMap(null));
+      overlayListRef.current.forEach(o => o.setMap(null));
+      polylineListRef.current = []; overlayListRef.current = [];
+      return;
+    }
     const route = manualRoutes[idx];
     if (!route) return;
     setSelectedManualIdx(idx);
+    setManualTransportMode("car"); setManualWalkingData(null);
     drawOnMap(route.roads, route.places, kakaoMapRef, polylineListRef, overlayListRef);
-  }, [manualRoutes, kakaoMapRef, polylineListRef, overlayListRef]);
+  }, [selectedManualIdx, manualRoutes, kakaoMapRef, polylineListRef, overlayListRef]);
 
-  // 직접 입력 — 이미 선택된 origin/dest 기준으로 후보 경로 3개 생성
+  // ── 직접 입력 탭: 이동 수단 전환
+  const handleManualTransport = useCallback(async (mode: "car" | "walk", route: RecommendedRoute) => {
+    const origin = routeState.origin;
+    const dest   = routeState.destination;
+    setManualTransportMode(mode);
+    if (mode === "car") {
+      drawOnMap(route.roads, route.places, kakaoMapRef, polylineListRef, overlayListRef);
+      return;
+    }
+    if (manualWalkingData) { drawWalkingRoute(manualWalkingData.coords, route.places, kakaoMapRef, polylineListRef, overlayListRef); return; }
+    setManualWalkLoading(true);
+    const pts = [
+      { lat: origin?.lat ?? 0, lng: origin?.lng ?? 0, label: origin?.label ?? "출발" },
+      ...route.places.map(p => ({ lat: p.lat, lng: p.lng, label: p.name })),
+      { lat: dest?.lat ?? 0,   lng: dest?.lng ?? 0,   label: dest?.label ?? "도착"  },
+    ];
+    const walking = await fetchWalkingLegs(pts);
+    setManualWalkLoading(false);
+    if (!walking) { setManualTransportMode("car"); drawOnMap(route.roads, route.places, kakaoMapRef, polylineListRef, overlayListRef); return; }
+    setManualWalkingData(walking);
+    drawWalkingRoute(walking.coords, route.places, kakaoMapRef, polylineListRef, overlayListRef);
+  }, [manualWalkingData, routeState.origin, routeState.destination, kakaoMapRef, polylineListRef, overlayListRef]);
+
+  // ── 직접 입력 탭: 경로 탐색
   const handleSearch = useCallback(async () => {
     const origin = routeState.origin;
     const dest   = routeState.destination;
     if (!origin || !dest) { onSetError("출발지와 도착지를 모두 선택해주세요"); return; }
     setManualLoading(true); setManualError(null); setManualRoutes([]); setSelectedManualIdx(null);
+    setManualTransportMode("car"); setManualWalkingData(null);
     onSetError(""); onSetResult(null);
     polylineListRef.current.forEach(p => p.setMap(null)); overlayListRef.current.forEach(o => o.setMap(null));
     polylineListRef.current = []; overlayListRef.current = [];
@@ -502,6 +725,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
     onSetOrigin(routeState.destination);
     onSetDest(routeState.origin);
     onSetResult(null); setManualRoutes([]); setSelectedManualIdx(null);
+    setManualTransportMode("car"); setManualWalkingData(null);
   }, [originInput, destInput, routeState, onSetOrigin, onSetDest, onSetResult]);
 
   // 탭 전환 시 지도 초기화
@@ -511,13 +735,14 @@ const RoutePanel: FC<RoutePanelProps> = ({
     polylineListRef.current = []; overlayListRef.current = [];
     setSelectedRouteIdx(null); setSelectedManualIdx(null);
     setRecOriginPlace(null); setRecDestPlace(null);
+    setRecTransportMode("car"); setRecWalkingData(null);
+    setManualTransportMode("car"); setManualWalkingData(null);
     onSetResult(null);
     setPanelTab(tab);
   };
 
   const { errorMsg } = routeState;
-  const selectedRoute       = selectedRouteIdx  !== null ? recRoutes[selectedRouteIdx]     : null;
-  const selectedManualRoute = selectedManualIdx !== null ? manualRoutes[selectedManualIdx]  : null;
+  const selectedRoute = selectedRouteIdx !== null ? recRoutes[selectedRouteIdx] : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -579,33 +804,75 @@ const RoutePanel: FC<RoutePanelProps> = ({
                 <button onClick={() => { recRefetch(); setSelectedRouteIdx(null); setRecOriginPlace(null); setRecDestPlace(null); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: COLOR_TEXT_SUB, padding: 0 }}>🔄 재추천</button>
               </div>
 
-              {/* 추천 기준 배지 */}
+              {/* 코스 유형 배지 */}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {["⭐ 평점 우선", "📍 거리 고려", "🎨 카테고리 다양성"].map(label => (
+                {["🏛 명소 탐방", "🍜 맛집 투어", "☀️ 반나절 코스"].map(label => (
                   <span key={label} style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: COLOR_BG, color: COLOR_TEXT_SUB, border: `1px solid ${COLOR_BORDER}` }}>{label}</span>
                 ))}
               </div>
 
-              {/* 후보 카드 */}
+              {/* 후보 카드 — 선택 시 바로 아래 결과 카드 아코디언 표시 */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {recRoutes.map((route, i) => (
-                  <RouteOptionCard
-                    key={i} route={route}
-                    isSelected={selectedRouteIdx === i}
-                    onSelect={() => handleSelectRoute(i)}
-                  />
+                  <div key={i}>
+                    <RouteOptionCard
+                      route={route}
+                      isSelected={selectedRouteIdx === i}
+                      onSelect={() => handleSelectRoute(i)}
+                    />
+                    {selectedRouteIdx === i && (
+                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {/* 이동 수단 토글 */}
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {(["car", "walk"] as const).map(mode => (
+                            <button
+                              key={mode}
+                              onClick={() => handleRecTransport(mode, route)}
+                              disabled={recWalkLoading && mode === "walk"}
+                              style={{
+                                flex: 1, padding: "8px 0", borderRadius: 10, cursor: "pointer",
+                                border: `1.5px solid ${recTransportMode === mode ? (mode === "car" ? COLOR_PRIMARY : "#3b82f6") : COLOR_BORDER}`,
+                                background: recTransportMode === mode ? (mode === "car" ? COLOR_PRIMARY : "#eff6ff") : "transparent",
+                                color: recTransportMode === mode ? (mode === "car" ? "#fff" : "#3b82f6") : COLOR_TEXT_SUB,
+                                fontSize: 12, fontWeight: 700, fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s",
+                              }}
+                            >
+                              {mode === "car" ? "🚗 차량" : recWalkLoading ? "⏳ 계산 중..." : "🚶 도보"}
+                            </button>
+                          ))}
+                        </div>
+                        <RouteResultCard
+                          result={{
+                            distanceMeter: recTransportMode === "car" ? route.totalDistance : (recWalkingData?.distanceMeter ?? 0),
+                            durationSec:   recTransportMode === "car" ? route.totalDuration : (recWalkingData?.durationSec ?? 0),
+                            taxiFare:      recTransportMode === "car" ? route.taxiFare : 0,
+                            tollFare:      recTransportMode === "car" ? route.tollFare : 0,
+                            roads:         route.roads,
+                          }}
+                          origin="현재 위치"
+                          dest={route.places[route.places.length - 1]?.name ?? "도착"}
+                          waypoints={route.places.slice(0, -1)}
+                        />
+                        {!isNavigating ? (
+                          <button
+                            onClick={() => onStartNavigation(route)}
+                            style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
+                          >
+                            🗺 안내 시작
+                          </button>
+                        ) : (
+                          <button
+                            onClick={onCancelNavigation}
+                            style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: `1.5px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, color: COLOR_TEXT_SUB, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
+                          >
+                            ✕ 안내 취소
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
-
-              {/* 선택된 경로 결과 카드 */}
-              {selectedRoute && (
-                <RouteResultCard
-                  result={{ distanceMeter: selectedRoute.totalDistance, durationSec: selectedRoute.totalDuration, taxiFare: selectedRoute.taxiFare, tollFare: selectedRoute.tollFare, roads: selectedRoute.roads }}
-                  origin="현재 위치"
-                  dest={selectedRoute.places[selectedRoute.places.length - 1]?.name ?? "도착"}
-                  waypoints={selectedRoute.places.slice(0, -1)}
-                />
-              )}
 
               <div style={{ padding: "10px 14px", background: COLOR_BG, borderRadius: 10, border: `1px solid ${COLOR_BORDER}` }}>
                 <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, lineHeight: 1.6 }}>
@@ -703,32 +970,90 @@ const RoutePanel: FC<RoutePanelProps> = ({
               <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_SUB, display: "flex", alignItems: "center", gap: 8 }}>
                 <span>추천 경로 <span style={{ color: COLOR_PRIMARY }}>{manualRoutes.length}개</span></span>
                 <button
-                  onClick={() => { setManualRoutes([]); setSelectedManualIdx(null); polylineListRef.current.forEach(p => p.setMap(null)); overlayListRef.current.forEach(o => o.setMap(null)); polylineListRef.current = []; overlayListRef.current = []; }}
+                  onClick={() => {
+                    setManualRoutes([]); setSelectedManualIdx(null);
+                    setManualTransportMode("car"); setManualWalkingData(null);
+                    polylineListRef.current.forEach(p => p.setMap(null)); overlayListRef.current.forEach(o => o.setMap(null));
+                    polylineListRef.current = []; overlayListRef.current = [];
+                  }}
                   style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 12, color: COLOR_TEXT_SUB, padding: 0 }}
                 >
                   초기화
                 </button>
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {manualRoutes.map((route, i) => (
-                  <RouteOptionCard
-                    key={i} route={route}
-                    isSelected={selectedManualIdx === i}
-                    onSelect={() => handleSelectManualRoute(i)}
-                  />
+              {/* 코스 유형 배지 */}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {["🏛 명소 탐방", "🍜 맛집 투어", "☀️ 반나절 코스"].map(label => (
+                  <span key={label} style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: COLOR_BG, color: COLOR_TEXT_SUB, border: `1px solid ${COLOR_BORDER}` }}>{label}</span>
                 ))}
               </div>
 
-              {/* 선택된 경로 결과 카드 */}
-              {selectedManualRoute && (
-                <RouteResultCard
-                  result={{ distanceMeter: selectedManualRoute.totalDistance, durationSec: selectedManualRoute.totalDuration, taxiFare: selectedManualRoute.taxiFare, tollFare: selectedManualRoute.tollFare, roads: selectedManualRoute.roads }}
-                  origin={routeState.origin?.label ?? "출발"}
-                  dest={routeState.destination?.label ?? "도착"}
-                  waypoints={selectedManualRoute.places}
-                />
-              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* 코스 카드 — 선택 시 아코디언으로 결과 + 안내 시작 표시 */}
+                {manualRoutes.map((route, i) => (
+                  <div key={i}>
+                    <RouteOptionCard
+                      route={route}
+                      isSelected={selectedManualIdx === i}
+                      onSelect={() => handleSelectManualRoute(i)}
+                    />
+                    {selectedManualIdx === i && (
+                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {/* 이동 수단 토글 */}
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {(["car", "walk"] as const).map(mode => (
+                            <button
+                              key={mode}
+                              onClick={() => handleManualTransport(mode, route)}
+                              disabled={manualWalkLoading && mode === "walk"}
+                              style={{
+                                flex: 1, padding: "8px 0", borderRadius: 10, cursor: "pointer",
+                                border: `1.5px solid ${manualTransportMode === mode ? (mode === "car" ? COLOR_PRIMARY : "#3b82f6") : COLOR_BORDER}`,
+                                background: manualTransportMode === mode ? (mode === "car" ? COLOR_PRIMARY : "#eff6ff") : "transparent",
+                                color: manualTransportMode === mode ? (mode === "car" ? "#fff" : "#3b82f6") : COLOR_TEXT_SUB,
+                                fontSize: 12, fontWeight: 700, fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s",
+                              }}
+                            >
+                              {mode === "car" ? "🚗 차량" : manualWalkLoading ? "⏳ 계산 중..." : "🚶 도보"}
+                            </button>
+                          ))}
+                        </div>
+                        <RouteResultCard
+                          result={{
+                            distanceMeter: manualTransportMode === "car" ? route.totalDistance : (manualWalkingData?.distanceMeter ?? 0),
+                            durationSec:   manualTransportMode === "car" ? route.totalDuration : (manualWalkingData?.durationSec ?? 0),
+                            taxiFare:      manualTransportMode === "car" ? route.taxiFare : 0,
+                            tollFare:      manualTransportMode === "car" ? route.tollFare : 0,
+                            roads:         route.roads,
+                          }}
+                          origin={routeState.origin?.label ?? "출발"}
+                          dest={routeState.destination?.label ?? "도착"}
+                          waypoints={route.places}
+                        />
+                        {!isNavigating ? (
+                          <button
+                            onClick={() => {
+                              sendRouteFeedback(route, manualRoutes.filter((_, j) => j !== i));
+                              onStartNavigation(route);
+                            }}
+                            style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
+                          >
+                            🗺 안내 시작
+                          </button>
+                        ) : (
+                          <button
+                            onClick={onCancelNavigation}
+                            style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: `1.5px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, color: COLOR_TEXT_SUB, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
+                          >
+                            ✕ 안내 취소
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
 
               <div style={{ padding: "10px 14px", background: COLOR_BG, borderRadius: 10, border: `1px solid ${COLOR_BORDER}` }}>
                 <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, lineHeight: 1.6 }}>

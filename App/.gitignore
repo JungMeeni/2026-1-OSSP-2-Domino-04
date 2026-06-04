@@ -26,3 +26,5 @@ dist-ssr
 
 # branch 전환 시에도 .env는 로컬에 유지
 echo ".env" >> .gitignore
+
+.claude/

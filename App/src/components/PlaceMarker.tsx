@@ -29,7 +29,7 @@ const COLOR_PIN        = "#3B7DFF";
 const COLOR_PIN_ACTIVE = "#2563EB";
 
 const CATEGORY_ICON: Record<Category, string> = {
-  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍",
+  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍", 식당: "🍽️"
 };
 
 interface PlaceMarkerProps {

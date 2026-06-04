@@ -19,7 +19,6 @@ import type { Place, Category } from "../types/type";
 
 // ── [CONFIG] ──────────────────────────────────────────────
 
-const TA_API_KEY = import.meta.env.VITE_TRIPADVISOR_API_KEY as string;
 
 const KAKAO_CATEGORY_LIST: { code: string; category: Category }[] = [
   { code: "AT4", category: "명소" },   // 관광명소
@@ -52,16 +51,20 @@ interface TaDetailResponse {
 
 // ── [UTIL] ────────────────────────────────────────────────
 
-// Vite 프록시 경유 URL 생성
-const taUrl = (path: string) =>
-  import.meta.env.DEV
-    ? `/vite-proxy/tripadvisor/api/v1/${path}`
-    : `${import.meta.env.VITE_BACKEND_URL}/api/tripadvisor/${path}`;
+// TripAdvisor API — 브라우저에서 직접 호출 (임시)
+// 서버 IP(Docker/EC2)는 TripAdvisor WAF에 의해 403으로 차단되므로
+// 브라우저 IP로 직접 호출한다. API 키는 VITE_TRIPADVISOR_API_KEY 환경변수 사용.
+//
+// [해결 방향 — 백엔드 팀 참고]
+//   Option A) 주거용 프록시(residential proxy) 서버 경유 — httpx ProxyTransport 사용
+//   Option B) FastAPI 프록시를 없애고 브라우저에서 직접 호출 ← 현재 방식
+//             (VITE_TRIPADVISOR_API_KEY 이미 .env에 있음)
+//   Option C) TripAdvisor 대신 Google Places API로 교체
+//             (서버-서버 호출 정상 동작, 평점·리뷰 동일하게 제공)
+const _TA_KEY  = import.meta.env.VITE_TRIPADVISOR_API_KEY ?? "";
+const _TA_BASE = "https://api.content.tripadvisor.com/api/v1";
+const taUrl = (path: string) => `${_TA_BASE}/${path}`;
 
-/**
- * 장소명 + 좌표로 Tripadvisor location_id 조회
- * latLong 힌트를 함께 보내 정확도 향상
- */
 export const fetchTaLocationId = async (
   placeName: string,
   lat:       number,
@@ -72,9 +75,11 @@ export const fetchTaLocationId = async (
       searchQuery: placeName,
       latLong:     `${lat},${lng}`,
       language:    "ko",
-      key:         TA_API_KEY,
+      key:         _TA_KEY,
     });
-    const res  = await fetch(`${taUrl("location/search")}?${params}`);
+    const res  = await fetch(`${taUrl("location/search")}?${params}`, {
+      headers: { accept: "application/json" },
+    });
     if (!res.ok) return null;
     const json: TaSearchResponse = await res.json();
     return json.data?.[0]?.location_id ?? null;
@@ -83,15 +88,14 @@ export const fetchTaLocationId = async (
   }
 };
 
-/**
- * location_id로 Tripadvisor Details에서 평점·리뷰 수 조회
- */
 export const fetchTaDetail = async (
   locationId: string,
 ): Promise<{ rating: number; reviews: number } | null> => {
   try {
-    const params = new URLSearchParams({ language: "ko", key: TA_API_KEY });
-    const res    = await fetch(`${taUrl(`location/${locationId}/details`)}?${params}`);
+    const params = new URLSearchParams({ language: "ko", key: _TA_KEY });
+    const res    = await fetch(`${taUrl(`location/${locationId}/details`)}?${params}`, {
+      headers: { accept: "application/json" },
+    });
     if (!res.ok) return null;
     const json: TaDetailResponse = await res.json();
     return {
@@ -204,38 +208,43 @@ export const useKakaoNearby = ({
     const enrichWithTripadvisor = async (
       items: { item: KakaoPlaceItem; category: Category }[],
     ) => {
-      // 거리순 정렬 후 최대 30개 (API 호출 수 제한)
+      // 거리순 정렬 후 최대 15개 (API 호출 수 제한)
       items.sort((a, b) => parseInt(a.item.distance) - parseInt(b.item.distance));
-      const top = items.slice(0, 30);
+      const top = items.slice(0, 15);
 
-      // location_id 병렬 조회
-      const idResults = await Promise.allSettled(
-        top.map(({ item }) =>
-          fetchTaLocationId(
-            item.place_name,
-            parseFloat(item.y),
-            parseFloat(item.x),
-          )
-        ),
-      );
+      // location_id 배치 조회 (5개씩, 300ms 간격 — rate limit 방지)
+      const idResults: (string | null)[] = [];
+      for (let i = 0; i < top.length; i += 5) {
+        const batch = await Promise.allSettled(
+          top.slice(i, i + 5).map(({ item }) =>
+            fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x))
+          ),
+        );
+        idResults.push(...batch.map(r => (r.status === "fulfilled" ? r.value : null)));
+        if (i + 5 < top.length) await new Promise(res => setTimeout(res, 300));
+        if (cancelledRef.current) return;
+      }
 
       if (cancelledRef.current) return;
 
-      // Details 병렬 조회 (location_id 없는 항목은 null)
-      const detailResults = await Promise.allSettled(
-        idResults.map(res =>
-          res.status === "fulfilled" && res.value
-            ? fetchTaDetail(res.value)
-            : Promise.resolve(null)
-        ),
-      );
+      // Details 배치 조회 (location_id 없는 항목은 null)
+      const detailResults: ({ rating: number; reviews: number } | null)[] = [];
+      for (let i = 0; i < idResults.length; i += 5) {
+        const batch = await Promise.allSettled(
+          idResults.slice(i, i + 5).map(id =>
+            id ? fetchTaDetail(id) : Promise.resolve(null)
+          ),
+        );
+        detailResults.push(...batch.map(r => (r.status === "fulfilled" ? r.value : null)));
+        if (i + 5 < idResults.length) await new Promise(res => setTimeout(res, 300));
+        if (cancelledRef.current) return;
+      }
 
       if (cancelledRef.current) return;
 
       // Place 조립
       const places: Place[] = top.map(({ item, category }, i) => {
-        const detail =
-          detailResults[i].status === "fulfilled" ? detailResults[i].value : null;
+        const detail = detailResults[i] ?? null;
 
         return {
           id:       parseInt(item.id, 10),

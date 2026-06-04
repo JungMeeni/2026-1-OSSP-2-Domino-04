@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════════
-// useRecommendedRoute — 평점 기반 추천 경로 후보 3개 생성 훅
+// useRecommendedRoute — 백엔드 ML 모델 기반 추천 경로 3개 생성
 //
-// [변경] 단일 경로 → 후보 경로 3개 생성
-//   후보 A: 명소·문화 중심 (고평점 우선)
-//   후보 B: 카페·공원 중심 (거리 가중)
-//   후보 C: 카테고리 혼합 (다양성 최대화)
+// [흐름]
+//   1. 카카오 카테고리 검색 (5종 병렬) → 반경 2000m 내 장소 수집
+//   2. TripAdvisor 평점 보강 (localStorage 7일 캐시)
+//      → FastAPI /api/tripadvisor/* 프록시 경유
+//   3. POST /api/route/recommend → 백엔드 MLP 채점 + Held-Karp+2-opt 최적화
+//   4. 각 코스별 GET /api/directions → Kakao Directions 프록시 경유 폴리라인 데이터
 // ═══════════════════════════════════════════════════════════
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -12,19 +14,14 @@ import type { Place, Category, RouteResult, DirectionsResponse } from "../types/
 
 // ── [CONFIG] ──────────────────────────────────────────────
 
-const TA_API_KEY    = import.meta.env.VITE_TRIPADVISOR_API_KEY as string;
 const SEARCH_RADIUS = 2000;
-const MAX_WP = 5;
-
-const CATEGORY_WEIGHT: Record<Category, number> = {
-  명소: 1.4, 문화: 1.3, 공원: 1.2, 카페: 1.1, 갤러리: 1.1, 거리: 1.0,
-};
 
 const ALL_KAKAO_CATS: { code: string; category: Category }[] = [
   { code: "AT4", category: "명소" },
   { code: "CT1", category: "문화" },
   { code: "CE7", category: "카페" },
   { code: "PK6", category: "공원" },
+  { code: "FD6", category: "식당" },
 ];
 
 // ── [TYPES] ───────────────────────────────────────────────
@@ -43,7 +40,7 @@ export interface RecommendedRoute {
   places:        RecommendedPlace[];
   totalDistance: number;
   totalDuration: number;
-  roads:         RouteResult["roads"];   // 폴리라인용
+  roads:         RouteResult["roads"];
   taxiFare:      number;
   tollFare:      number;
   _ratingScore: number;
@@ -54,72 +51,144 @@ interface KakaoPlaceItem {
   x: string; y: string; distance: string;
 }
 
-// ── [UTIL] ────────────────────────────────────────────────
+// ── [BACKEND API TYPES] ───────────────────────────────────
 
-const taUrl = (path: string) =>
-  import.meta.env.DEV
-    ? `/vite-proxy/tripadvisor/api/v1/${path}`
-    : `${import.meta.env.VITE_BACKEND_URL}/api/tripadvisor/${path}`;
+interface BackendPlaceInput {
+  id:          string;
+  name:        string;
+  category:    string;
+  lat:         number;
+  lng:         number;
+  distance:    number;
+  address:     string;
+  rating:      number;
+  num_reviews: number;
+  web_url:     string;
+}
 
+interface BackendPlaceOutput {
+  id:          string;
+  name:        string;
+  category:    string;
+  lat:         number;
+  lng:         number;
+  distance:    number;
+  address:     string;
+  score:       number;
+  rating:      number;
+  num_reviews: number;
+  web_url:     string;
+}
 
-// [CONTENT API] Find Search: name(장소명), lat(위도), lng(경도) 이용해 tripadvisor 장소 고유 id (location_id) 가져오기
-const fetchTaLocationId = async (name: string, lat: number, lng: number): Promise<string | null> => {
+interface BackendRouteCandidate {
+  route_id:    number;
+  label:       string;
+  description: string;
+  emoji:       string;
+  places:      BackendPlaceOutput[];
+}
+
+// ── [TA CACHE] ────────────────────────────────────────────
+// TripAdvisor 평점 결과를 localStorage에 7일간 캐싱.
+
+type TaDetail = { rating: number; reviews: number; webUrl: string };
+
+const TA_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+
+const getTaCache = (kakaoId: string): TaDetail | null | undefined => {
   try {
-    const params = new URLSearchParams({ searchQuery: name, latLong: `${lat},${lng}`, language: "ko", key: TA_API_KEY });
-    const url = `${taUrl("location/search")}?${params}`;
-    const res    = await fetch(url);
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.warn(`[TA] location/search ${res.status}`, { name, url, body: text });
-      return null;
-    }
-    const json   = await res.json();
-    return json.data?.[0]?.location_id ?? null;
-  } catch (e) { console.warn("[TA] location/search exception", e); return null; }
+    const raw = localStorage.getItem(`ta_${kakaoId}`);
+    if (!raw) return undefined;
+    const { data, ts } = JSON.parse(raw) as { data: TaDetail | null; ts: number };
+    if (Date.now() - ts > TA_CACHE_TTL) { localStorage.removeItem(`ta_${kakaoId}`); return undefined; }
+    // null로 저장된 실패 결과는 캐시 미스로 처리해 재시도
+    if (data === null) { localStorage.removeItem(`ta_${kakaoId}`); return undefined; }
+    return data;
+  } catch { return undefined; }
 };
 
-// [CONTENT API] Location Details: 앞서 구한 장소 고유 id (location_id)를 이용해 평점, 리뷰, 웹페이지 url 가져오기
-const fetchTaDetail = async (location_id: string): Promise<{ rating: number; reviews: number; webUrl: string } | null> => {
+const setTaCache = (kakaoId: string, data: TaDetail) => {
+  try { localStorage.setItem(`ta_${kakaoId}`, JSON.stringify({ data, ts: Date.now() })); } catch { }
+};
+
+// ── [URL HELPERS] ─────────────────────────────────────────
+
+const _BASE    = import.meta.env.VITE_BACKEND_URL ?? "";
+const backendUrl = (path: string) => `${_BASE}/api${path}`;
+
+// TripAdvisor — 브라우저 직접 호출 (임시)
+// 서버 IP가 TripAdvisor WAF에 차단되므로 브라우저 IP로 직접 호출.
+const _TA_KEY  = import.meta.env.VITE_TRIPADVISOR_API_KEY ?? "";
+const _TA_BASE = "https://api.content.tripadvisor.com/api/v1";
+const taUrl = (path: string) => `${_TA_BASE}/${path}`;
+
+// ── [FEEDBACK] ───────────────────────────────────────────
+// 사용자가 코스를 선택(안내 시작)하면 두 피드백 엔드포인트를 fire-and-forget으로 호출.
+//   POST /api/route/recommend/feedback → MLP 가중치(weights_A/B/C.pt) 온라인 학습
+//   POST /api/route/feedback           → 카테고리 가중치(category_weights.json) EMA 갱신
+
+export const sendRouteFeedback = (
+  selectedRoute: RecommendedRoute,
+  rejectedRoutes: RecommendedRoute[],
+): void => {
+  const toInput = (p: RecommendedPlace): BackendPlaceInput => ({
+    id:          String(p.id),
+    name:        p.name,
+    category:    p.category,
+    lat:         p.lat,
+    lng:         p.lng,
+    distance:    p.distance,
+    address:     p.district,
+    rating:      p.rating,
+    num_reviews: p.reviews,
+    web_url:     p.taUrl ?? "",
+  });
+
+  const selectedInputs = selectedRoute.places.map(toInput);
+  const seen           = new Set(selectedInputs.map(p => p.id));
+  const rejectedInputs: BackendPlaceInput[] = [];
+  for (const route of rejectedRoutes) {
+    for (const place of route.places) {
+      const id = String(place.id);
+      if (!seen.has(id)) { seen.add(id); rejectedInputs.push(toInput(place)); }
+    }
+  }
+
+  Promise.allSettled([
+    fetch(backendUrl("/route/recommend/feedback"), {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ selected_places: selectedInputs, rejected_places: rejectedInputs }),
+    }),
+    fetch(backendUrl("/route/feedback"), {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ selected_categories: selectedRoute.places.map(p => p.category) }),
+    }),
+  ]);
+};
+
+const fetchTaLocationId = async (name: string, lat: number, lng: number): Promise<string | null> => {
   try {
-    const params = new URLSearchParams({ language: "ko", key: TA_API_KEY });
-    const res    = await fetch(`${taUrl(`location/${location_id}/details`)}?${params}`);
+    const params = new URLSearchParams({ searchQuery: name, latLong: `${lat},${lng}`, language: "ko", key: _TA_KEY });
+    const res    = await fetch(`${taUrl("location/search")}?${params}`, { headers: { accept: "application/json" } });
+    if (!res.ok) return null;
+    const json   = await res.json();
+    return json.data?.[0]?.location_id ?? null;
+  } catch { return null; }
+};
+
+const fetchTaDetail = async (location_id: string): Promise<TaDetail | null> => {
+  try {
+    const params = new URLSearchParams({ language: "ko", key: _TA_KEY });
+    const res    = await fetch(`${taUrl(`location/${location_id}/details`)}?${params}`, { headers: { accept: "application/json" } });
     if (!res.ok) return null;
     const json   = await res.json();
     return { rating: parseFloat(json.rating ?? "0"), reviews: parseInt(json.num_reviews ?? "0", 10), webUrl: json.web_url ?? "" };
   } catch { return null; }
 };
 
-/** 점과 선분(출발↔현위치) 간 수직거리 */
-const pointToSegmentDist = (
-  px: number, py: number,
-  ax: number, ay: number,
-  bx: number, by: number,
-): number => {
-  const dx = bx - ax; const dy = by - ay;
-  if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
-  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
-};
-
-// 최근접 이웃으로 방문 순서 최적화
-const optimizeOrder = (places: RecommendedPlace[], startLat: number, startLng: number): RecommendedPlace[] => {
-  const remaining = [...places];
-  const ordered: RecommendedPlace[] = [];
-  let cur = { lat: startLat, lng: startLng };
-  while (remaining.length > 0) {
-    let minI = 0; let minD = Infinity;
-    remaining.forEach((p, i) => {
-      const d = Math.hypot(p.lat - cur.lat, p.lng - cur.lng);
-      if (d < minD) { minD = d; minI = i; }
-    });
-    const next = remaining.splice(minI, 1)[0];
-    ordered.push(next);
-    cur = next;
-  }
-  return ordered;
-};
-
-// Directions API 호출
+// Kakao Directions — FastAPI /api/directions 프록시 경유
 const fetchDirections = async (
   places: RecommendedPlace[], userLat: number, userLng: number,
 ): Promise<{ distance: number; duration: number; roads: RouteResult["roads"]; taxiFare: number; tollFare: number }> => {
@@ -133,9 +202,7 @@ const fetchDirections = async (
       alternatives: "false", road_details: "false",
       ...(wps ? { waypoints: wps } : {}),
     });
-    const res = await fetch(`${import.meta.env.VITE_KAKAO_DIRECTIONS_URL}?${params}`, {
-      headers: { Authorization: `KakaoAK ${import.meta.env.VITE_KAKAO_REST_API_KEY}` },
-    });
+    const res = await fetch(`${_BASE}/api/directions?${params}`);
     if (!res.ok) return { distance: 0, duration: 0, roads: [], taxiFare: 0, tollFare: 0 };
     const data: DirectionsResponse = await res.json();
     const route = data.routes?.[0];
@@ -148,52 +215,6 @@ const fetchDirections = async (
   } catch { return { distance: 0, duration: 0, roads: [], taxiFare: 0, tollFare: 0 }; }
 };
 
-// ── [코스별 선정 로직] ─────────────────────────────────────
-//
-// A코스 — 순수 고평점 TOP5
-//   rating × log(reviews) 점수 내림차순
-//   → 가장 검증된 장소 위주
-//
-// B코스 — 거리 효율 TOP5
-//   현위치 기준 거리가 가깝고 동선 내 이탈이 적은 장소 우선
-//   정렬 기준: distance/500 - ratingScore (작을수록 우선)
-//   → 무리 없이 걸어서 다닐 수 있는 코스
-//
-// C코스 — 카테고리 다양성 TOP5
-//   카테고리별 최고점 1개씩 먼저, 나머지 점수 순으로 채움
-//   → A·B와 최대한 다른 장소 조합
-
-type EnrichedPlace = RecommendedPlace & { _ratingScore: number; _distance: number };
-
-const selectA = (pool: EnrichedPlace[]): RecommendedPlace[] =>
-  [...pool].sort((a, b) => b._ratingScore - a._ratingScore).slice(0, MAX_WP);
-
-const selectB = (pool: EnrichedPlace[]): RecommendedPlace[] =>
-  [...pool].sort((a, b) =>
-    (a._distance / 500 - a._ratingScore) - (b._distance / 500 - b._ratingScore)
-  ).slice(0, MAX_WP);
-
-const selectC = (pool: EnrichedPlace[]): RecommendedPlace[] => {
-  const byScore  = [...pool].sort((a, b) => b._ratingScore - a._ratingScore);
-  const selected: RecommendedPlace[] = [];
-  const usedCats = new Set<Category>();
-  for (const p of byScore) {
-    if (selected.length >= MAX_WP) break;
-    if (!usedCats.has(p.category)) { usedCats.add(p.category); selected.push(p); }
-  }
-  for (const p of byScore) {
-    if (selected.length >= MAX_WP) break;
-    if (!selected.find(s => s.id === p.id)) selected.push(p);
-  }
-  return selected;
-};
-
-const COURSES: { label: string; description: string; emoji: string; select: (pool: EnrichedPlace[]) => RecommendedPlace[] }[] = [
-  { label: "고평점 코스",    description: "Tripadvisor 평점 TOP 5 장소만 방문",       emoji: "⭐", select: selectA },
-  { label: "거리 효율 코스", description: "가깝고 동선 효율이 높은 장소 위주",          emoji: "🗺", select: selectB },
-  { label: "다양성 코스",    description: "카테고리별 1위씩 골고루 방문",               emoji: "🎨", select: selectC },
-];
-
 // ── [HOOK] ────────────────────────────────────────────────
 
 interface UseRecommendedRouteOptions {
@@ -203,7 +224,7 @@ interface UseRecommendedRouteOptions {
 }
 
 interface UseRecommendedRouteResult {
-  routes:    RecommendedRoute[];   // 후보 3개
+  routes:    RecommendedRoute[];
   isLoading: boolean;
   error:     string | null;
   refetch:   () => void;
@@ -225,8 +246,14 @@ export const useRecommendedRoute = ({
     const cacheKey = `rec_routes_${userLat.toFixed(4)}_${userLng.toFixed(4)}`;
     const cached   = sessionStorage.getItem(cacheKey);
     if (cached) {
-      try { setRoutes(JSON.parse(cached)); return; }
-      catch { sessionStorage.removeItem(cacheKey); }
+      try {
+        const parsed: RecommendedRoute[] = JSON.parse(cached);
+        if (parsed.length > 0 && parsed.every(r => r.roads?.length > 0)) {
+          setRoutes(parsed);
+          return;
+        }
+      } catch { }
+      sessionStorage.removeItem(cacheKey);
     }
 
     cancelledRef.current = false;
@@ -237,7 +264,7 @@ export const useRecommendedRoute = ({
     const ps     = new (window.kakao.maps.services as any).Places();
     const center = new window.kakao.maps.LatLng(userLat, userLng);
 
-    // ── Step 1: 카카오 카테고리 검색 (병렬)
+    // ── Step 1: 카카오 카테고리 검색 (5종 병렬)
     let completed = 0;
     const rawPlaces: { item: KakaoPlaceItem; category: Category }[] = [];
     const seenIds  = new Set<string>();
@@ -263,75 +290,151 @@ export const useRecommendedRoute = ({
       }, { location: center, radius: SEARCH_RADIUS, sort: "distance" });
     });
 
-    // ── Step 2~4: 평점 보강 → 코스 3개 생성 → Directions 호출
+    // ── Step 2~3: TripAdvisor 평점 보강 → 백엔드 ML 추천 → Directions 호출
     const buildRoutes = async (items: { item: KakaoPlaceItem; category: Category }[]) => {
-      // 상위 20개만 Tripadvisor 조회 (API 호출 최소화)
-      const candidates = items.slice(0, 20);
+      // 카테고리별 최대 4개씩 균등 샘플링 (특정 카테고리 독점 방지)
+      const PER_CAT = 4;
+      const byCat = new Map<Category, { item: KakaoPlaceItem; category: Category }[]>();
+      for (const raw of items) {
+        const arr = byCat.get(raw.category) ?? [];
+        arr.push(raw);
+        byCat.set(raw.category, arr);
+      }
+      const candidates = [...byCat.values()].flatMap(arr => arr.slice(0, PER_CAT));
 
-      // 장소의 location_id 가져오기
-      const idResults = await Promise.allSettled(
-        candidates.map(({ item }) => fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x)))
-      ); console.log(idResults);
+      // TripAdvisor 평점 — 캐시 히트 시 건너뜀 (429 rate limit 방지)
+      const cachedMap = new Map<string, TaDetail | null>();
+      const toFetch: { item: KakaoPlaceItem; idx: number }[] = [];
+      candidates.forEach(({ item }, idx) => {
+        const c = getTaCache(item.id);
+        if (c !== undefined) cachedMap.set(item.id, c);
+        else toFetch.push({ item, idx });
+      });
+
+      if (toFetch.length > 0) {
+        // 5개씩 배치 처리 — TripAdvisor rate limit(5 req/s) 방지
+        const idResults: (string | null)[] = [];
+        for (let i = 0; i < toFetch.length; i += 5) {
+          const batch = await Promise.allSettled(
+            toFetch.slice(i, i + 5).map(({ item }) =>
+              fetchTaLocationId(item.place_name, parseFloat(item.y), parseFloat(item.x))
+            )
+          );
+          idResults.push(...batch.map(r => (r.status === "fulfilled" ? r.value : null)));
+          if (i + 5 < toFetch.length) await new Promise(res => setTimeout(res, 300));
+          if (cancelledRef.current) return;
+        }
+
+        if (cancelledRef.current) return;
+
+        const detailResults: (TaDetail | null)[] = [];
+        for (let i = 0; i < idResults.length; i += 5) {
+          const batch = await Promise.allSettled(
+            idResults.slice(i, i + 5).map(id => (id ? fetchTaDetail(id) : Promise.resolve(null)))
+          );
+          detailResults.push(...batch.map(r => (r.status === "fulfilled" ? r.value : null)));
+          if (i + 5 < idResults.length) await new Promise(res => setTimeout(res, 300));
+          if (cancelledRef.current) return;
+        }
+
+        if (cancelledRef.current) return;
+
+        toFetch.forEach(({ item }, j) => {
+          const d = detailResults[j] ?? null;
+          // null(API 실패) 결과는 캐시하지 않아 다음 로드 시 재시도 가능하게 함
+          if (d !== null) setTaCache(item.id, d);
+          cachedMap.set(item.id, d);
+        });
+      }
+
       if (cancelledRef.current) return;
 
-      // location_id를 이용해 장소별 평점, 리뷰 수, tripadvisor detail url get
-      const detailResults = await Promise.allSettled(
-        idResults.map(r => r.status === "fulfilled" && r.value ? fetchTaDetail(r.value) : Promise.resolve(null))
-      ); console.log(detailResults);
-      if (cancelledRef.current) return;
-
-      // EnrichedPlace 조립 — 코스별 선정에 필요한 _ratingScore, _distance 포함
-      const enriched: EnrichedPlace[] = candidates.map(({ item, category }, i) => {
-        const detail  = detailResults[i].status === "fulfilled" ? detailResults[i].value : null;
-        const rating  = detail?.rating  ?? 0;
-        const reviews = detail?.reviews ?? 0;
-        const dist    = parseInt(item.distance, 10);
-        const ratingScore = rating > 0
-          ? rating * (CATEGORY_WEIGHT[category] ?? 1) * Math.log10(reviews + 1)
-          : 0;
+      // 백엔드에 보낼 PlaceInput 배열 조립
+      const placeInputs: BackendPlaceInput[] = candidates.map(({ item, category }) => {
+        const detail = cachedMap.get(item.id) ?? null;
         return {
-          id: parseInt(item.id, 10), name: item.place_name, category,
-          rating, reviews, score: ratingScore,
-          district: item.address_name.split(" ").slice(0, 2).join(" "),
-          lat: parseFloat(item.y), lng: parseFloat(item.x), distance: dist,
-          taUrl: detail?.webUrl ?? "",
-          _ratingScore: ratingScore,
-          _distance:    dist,
+          id:          item.id,
+          name:        item.place_name,
+          category,
+          lat:         parseFloat(item.y),
+          lng:         parseFloat(item.x),
+          distance:    parseInt(item.distance, 10),
+          address:     item.address_name,
+          rating:      detail?.rating  ?? 0,
+          num_reviews: detail?.reviews ?? 0,
+          web_url:     detail?.webUrl  ?? "",
         };
       });
 
-      // 평점 있는 곳 우선, 없으면 전체 사용
-      const pool = enriched.filter(p => p._ratingScore > 0).length >= 3
-        ? enriched.filter(p => p._ratingScore > 0)
-        : enriched;
+      // ── 백엔드 ML 모델 추천 호출 (MLP 채점 + Held-Karp+2-opt 순서 최적화)
+      let backendRoutes: BackendRouteCandidate[] = [];
+      try {
+        const res = await fetch(backendUrl("/route/recommend"), {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ user_lat: userLat, user_lng: userLng, places: placeInputs }),
+        });
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data: { routes: BackendRouteCandidate[] } = await res.json();
+        backendRoutes = data.routes ?? [];
+      } catch (e) {
+        if (!cancelledRef.current) {
+          setError(`경로 추천 서버 오류: ${(e as Error).message}`);
+          setIsLoading(false);
+        }
+        return;
+      }
 
-      // 코스별 장소 선정 → 최근접 이웃 순서 최적화 → Directions 병렬 호출
+      if (cancelledRef.current) return;
+      if (backendRoutes.length === 0) {
+        setError("추천 경로를 생성하지 못했어요. 잠시 후 다시 시도해 주세요.");
+        setIsLoading(false);
+        return;
+      }
+
+      // ── 각 코스별 Kakao Directions (FastAPI 프록시) 호출
       const routeResults = await Promise.allSettled(
-        COURSES.map(async course => {
-          const selected = course.select(pool);
-          if (selected.length === 0) throw new Error("경유지 없음");
-          const ordered  = optimizeOrder(selected, userLat, userLng);
-          const dir      = await fetchDirections(ordered, userLat, userLng);
+        backendRoutes.map(async course => {
+          const orderedPlaces: RecommendedPlace[] = course.places.map(p => ({
+            id:           parseInt(p.id, 10),
+            name:         p.name,
+            category:     p.category as Category,
+            rating:       p.rating,
+            reviews:      p.num_reviews,
+            score:        p.score,
+            district:     p.address.split(" ").slice(0, 2).join(" "),
+            lat:          p.lat,
+            lng:          p.lng,
+            distance:     p.distance,
+            taUrl:        p.web_url,
+            _ratingScore: p.score,
+            _detour:      0,
+          }));
+
+          const dir = await fetchDirections(orderedPlaces, userLat, userLng);
           return {
             label:         course.label,
             description:   course.description,
             emoji:         course.emoji,
-            places:        ordered,
+            places:        orderedPlaces,
             totalDistance: dir.distance,
             totalDuration: dir.duration,
             roads:         dir.roads,
             taxiFare:      dir.taxiFare,
             tollFare:      dir.tollFare,
+            _ratingScore:  orderedPlaces.reduce((s, p) => s + p._ratingScore, 0) / (orderedPlaces.length || 1),
           } as RecommendedRoute;
         })
       );
+
       if (cancelledRef.current) return;
 
       const built = routeResults
         .filter(r => r.status === "fulfilled")
-        .map(r => (r as PromiseFulfilledResult<RecommendedRoute>).value);
+        .map(r => (r as PromiseFulfilledResult<RecommendedRoute>).value)
+        .filter(r => r.roads.length > 0);
 
-      sessionStorage.setItem(cacheKey, JSON.stringify(built));
+      if (built.length > 0) sessionStorage.setItem(cacheKey, JSON.stringify(built));
       setRoutes(built);
       setIsLoading(false);
     };
