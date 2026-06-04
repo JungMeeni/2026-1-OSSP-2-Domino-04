@@ -1,15 +1,11 @@
-<<<<<<< HEAD
-from fastapi import APIRouter
-
-router = APIRouter()
-
-@router.post("/calculate")
-async def calculate_route(data: dict):
-    # 가중치 계산 로직
-    return {"message": "ok"}
-=======
 import math
-from fastapi import APIRouter, Depends, HTTPException
+import json
+import os
+from typing import Dict, List
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -20,11 +16,52 @@ router = APIRouter(tags=["Route"])
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-EARTH_RADIUS_M = 6_371_000  # metres
+EARTH_RADIUS_M = 6_371_000
+VERTEX_SAMPLE_STEP = 3
 
-# Vertex sampling: only check every Nth vertex to reduce CPU on long routes.
-# Tune this value based on acceptable accuracy vs. performance trade-off.
-VERTEX_SAMPLE_STEP = 3  # check vertices at index 0, 3, 6, 9, ...
+_WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "category_weights.json")
+_DEFAULT_WEIGHTS: Dict[str, float] = {
+    "명소": 1.4, "식당": 1.4, "문화": 1.3, "공원": 1.2, "카페": 1.1, "갤러리": 1.1, "거리": 1.0,
+}
+_LEARNING_RATE = 0.05
+
+_ML_SERVER_URL = os.getenv("ML_SERVER_URL", "http://ml-server:8001")
+
+
+# ---------------------------------------------------------------------------
+# Weight persistence
+# ---------------------------------------------------------------------------
+
+def _load_weights() -> Dict[str, float]:
+    try:
+        if os.path.exists(_WEIGHTS_FILE):
+            with open(_WEIGHTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {k: float(data.get(k, v)) for k, v in _DEFAULT_WEIGHTS.items()}
+    except Exception:
+        pass
+    return _DEFAULT_WEIGHTS.copy()
+
+
+def _save_weights(weights: Dict[str, float]) -> None:
+    os.makedirs(os.path.dirname(_WEIGHTS_FILE), exist_ok=True)
+    with open(_WEIGHTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(weights, f, ensure_ascii=False, indent=2)
+
+
+def _update_weights(weights: Dict[str, float], selected_categories: List[str]) -> Dict[str, float]:
+    selected = set(selected_categories)
+    new_weights: Dict[str, float] = {}
+    for cat, w in weights.items():
+        if cat in selected:
+            new_weights[cat] = w * (1.0 + _LEARNING_RATE)
+        else:
+            new_weights[cat] = w * (1.0 - _LEARNING_RATE * 0.3)
+
+    base_sum = sum(_DEFAULT_WEIGHTS.values())
+    cur_sum = sum(new_weights.values())
+    ratio = base_sum / cur_sum if cur_sum > 0 else 1.0
+    return {cat: round(v * ratio, 4) for cat, v in new_weights.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +69,6 @@ VERTEX_SAMPLE_STEP = 3  # check vertices at index 0, 3, 6, 9, ...
 # ---------------------------------------------------------------------------
 
 def _haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Return the great-circle distance in metres between two WGS-84 points."""
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     d_phi = math.radians(lat2 - lat1)
     d_lam = math.radians(lng2 - lng1)
@@ -41,10 +77,6 @@ def _haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> f
 
 
 def _load_active_disasters(db: Session) -> list:
-    """
-    Single DB query: fetch all currently active disaster alerts.
-    Returns a list of dicts with lat, lng, radius_m, weight_penalty.
-    """
     rows = db.execute(
         text("""
             SELECT
@@ -67,56 +99,58 @@ def _load_active_disasters(db: Session) -> list:
     ]
 
 
-def _check_vertex_against_disasters(
-    v_lat: float, v_lng: float, disasters: list
-) -> list:
-    """
-    Returns a list of disaster dicts that this vertex falls within.
-    Uses a fixed 50 m search buffer around each disaster radius.
-    """
+def _check_vertex_against_disasters(v_lat: float, v_lng: float, disasters: list) -> list:
     hits = []
     for d in disasters:
         dist = _haversine_distance(v_lat, v_lng, d["lat"], d["lng"])
-        if dist < (d["radius_m"] + 50):  # 50 m buffer
+        if dist < (d["radius_m"] + 50):
             hits.append(d)
     return hits
 
 
 # ---------------------------------------------------------------------------
-# Request schema
+# Request schemas
 # ---------------------------------------------------------------------------
 
 class RouteCalculateRequest(BaseModel):
-    routeData: dict  # Full Kakao Directions API response
+    routeData: dict
+
+
+class FeedbackRequest(BaseModel):
+    selected_categories: List[str]
+    route_type: str = ""
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/weights")
+def get_weights():
+    """현재 카테고리 추천 가중치 반환"""
+    return _load_weights()
+
+
+@router.post("/feedback")
+def update_weights_from_feedback(request: FeedbackRequest):
+    """사용자가 선택한 경로의 카테고리 기반으로 가중치 업데이트."""
+    weights = _load_weights()
+    updated = _update_weights(weights, request.selected_categories)
+    _save_weights(updated)
+    return {"updated_weights": updated}
+
 
 @router.post("/calculate")
 def calculate_route(
     request: RouteCalculateRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    Accepts a Kakao Directions response and overlays active disaster zones.
-
-    Kakao vertexes format: flat array [lng1, lat1, lng2, lat2, ...]
-    (longitude comes first in each pair)
-
-    Returns:
-      - is_safe: bool
-      - total_penalty: int (sum of max penalty per affected section)
-      - affected_sections: list of section indices with a disaster hit
-      - disaster_warnings: list of {section, road, penalty, disaster_center}
-    """
+    """카카오 Directions API 응답을 받아 활성 재난 구역과 겹치는 구간을 계산."""
     try:
         disasters = _load_active_disasters(db)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB query failed: {str(e)}")
 
-    # No active disasters — fast path
     if not disasters:
         return {
             "is_safe": True,
@@ -139,16 +173,12 @@ def calculate_route(
 
         for road_idx, road in enumerate(section.get("roads", [])):
             vertexes = road.get("vertexes", [])
-            # vertexes is a flat array: [lng0, lat0, lng1, lat1, ...]
-            # Iterate in steps of 2; apply sampling to skip redundant checks.
             i = 0
             vertex_num = 0
             while i + 1 < len(vertexes):
-                # Sampling: skip vertices that are not on the sample step
                 if vertex_num % VERTEX_SAMPLE_STEP == 0:
                     v_lng = vertexes[i]
                     v_lat = vertexes[i + 1]
-
                     hits = _check_vertex_against_disasters(v_lat, v_lng, disasters)
                     for hit in hits:
                         penalty = hit["weight_penalty"]
@@ -157,10 +187,7 @@ def calculate_route(
                             "section": section_idx,
                             "road": road_idx,
                             "penalty": penalty,
-                            "disaster_center": {
-                                "lat": hit["lat"],
-                                "lng": hit["lng"],
-                            },
+                            "disaster_center": {"lat": hit["lat"], "lng": hit["lng"]},
                         })
                 i += 2
                 vertex_num += 1
@@ -175,4 +202,25 @@ def calculate_route(
         "affected_sections": affected_sections,
         "disaster_warnings": disaster_warnings,
     }
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
+
+
+# ---------------------------------------------------------------------------
+# ML 서버 프록시 — routemodel은 ml-server 컨테이너에서 실행
+# ---------------------------------------------------------------------------
+
+@router.post("/recommend")
+async def proxy_recommend(request: Request):
+    """ML 서버로 경로 추천 요청을 프록시 (MLP 채점 + Held-Karp+2-opt)"""
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        res = await client.post(f"{_ML_SERVER_URL}/recommend", json=body)
+    return JSONResponse(content=res.json(), status_code=res.status_code)
+
+
+@router.post("/recommend/feedback")
+async def proxy_feedback(request: Request):
+    """ML 서버로 피드백 전달 (온라인 학습 — BCE + Adam)"""
+    body = await request.json()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        res = await client.post(f"{_ML_SERVER_URL}/recommend/feedback", json=body)
+    return JSONResponse(content=res.json(), status_code=res.status_code)

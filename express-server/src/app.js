@@ -13,8 +13,6 @@ const swaggerFile = require('./swagger-output.json'); // 자동 생성된 파일
 
 // 환경변수 로드 (실행 위치에 구애받지 않도록 절대 경로 명시)
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-<<<<<<< HEAD
-=======
 
 // 필수 환경변수 체크 — 누락 시 서버 시작 중단
 const REQUIRED_ENV_VARS = [
@@ -31,7 +29,6 @@ if (missingVars.length > 0) {
   console.error('[ERROR] .env 파일을 확인하고 서버를 재시작하세요.');
   process.exit(1);
 }
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
 
 const app = express();
 
@@ -57,7 +54,7 @@ app.use(cors({
       callback(null, false);
     }
   },
-  credentials: true, // 프론트와 쿠키/세션 공유가 필요하다면 true
+  credentials: true,
 }));
 
 // 1-2. Rate Limit 설정 (악의적인 매크로/봇 방어)
@@ -101,17 +98,7 @@ const PORT = process.env.PORT || 3000;
 if (require.main === module) {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server is running on port ${PORT}`);
-<<<<<<< HEAD
-        console.log(`📄 API Docs available at http://localhost:${PORT}/api-docs`);
-	// 🛠️ 환경 변수 주입 확인용 로그 추가!
-        console.log(`🔑 [환경변수 체크] TRIPADVISOR_API_KEY 존재 여부: ${process.env.TRIPADVISOR_API_KEY ? '✅ 매핑 성공' : '❌ undefined (없음)'}`);
-        // 보안을 위해 앞 5글자만 살짝 출력해보고 싶다면:
-        if (process.env.TRIPADVISOR_API_KEY) {
-            console.log(`   👉 Key 앞부분: ${process.env.TRIPADVISOR_API_KEY.substring(0, 5)}...`);
-        }
-=======
         console.log(`API Docs available at http://localhost:${PORT}/api-docs`);
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
     });
 }
 

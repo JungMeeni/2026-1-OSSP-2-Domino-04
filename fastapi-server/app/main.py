@@ -1,19 +1,5 @@
-<<<<<<< HEAD
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session      # 추가됨!
-from sqlalchemy import text             # 추가됨!
-from dotenv import load_dotenv
-
-from app.routers import disaster, route, population
-from app.database import get_db         # 추가됨!
-
-load_dotenv()
-
-app = FastAPI()
-=======
 """
 main.py
-
 FastAPI 앱 진입점.
 lifespan에서 scheduler 시작 + event_detector 콜백 등록.
 """
@@ -24,16 +10,22 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import logging
 
+# 라우터 임포트보다 먼저 .env를 로드해야 os.getenv()가 올바른 값을 반환한다
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.routers import disaster, route, population, cache
+from app.routers import disaster, route, population, cache, tripadvisor, kakao, tmap
 from app.services.scheduler import scheduler
 from app.services.event_detector import DisasterMessage
 from app.database import get_db
 
 logging.basicConfig(level=logging.DEBUG)
+
 
 # ── event_detector 콜백 ───────────────────────────
 
@@ -71,11 +63,9 @@ async def _on_new_disaster_events(events) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 서버 시작
     scheduler.detector.register_callback(_on_new_disaster_events)
     await scheduler.start()
     yield
-    # 서버 종료
     await scheduler.stop()
 
 
@@ -87,18 +77,21 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(disaster.router, prefix="/disaster")
 app.include_router(population.router, prefix="/population")
 app.include_router(route.router, prefix="/route")
-<<<<<<< HEAD
-
-@app.get("/")
-def health_check():
-    return {"status": "ok"} 
-=======
 app.include_router(cache.router, prefix="/cache")
+app.include_router(tripadvisor.router, prefix="/tripadvisor")
+app.include_router(kakao.router)
+app.include_router(tmap.router, prefix="/tmap")
 
 
 @app.get("/health")
@@ -112,20 +105,11 @@ async def health():
 
 
 # ── DB 연결 테스트 (개발용) ───────────────────────
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
 
 @app.get("/db-test")
 def test_db_connection(db: Session = Depends(get_db)):
     try:
-<<<<<<< HEAD
-        # DB에 간단한 숫자 1을 반환하라는 쿼리를 날려봅니다.
-        result = db.execute(text("SELECT 1")).scalar()
-        return {"status": "success", "message": f"DB 연결 완벽합니다! 반환값: {result} 🎉"}
-    except Exception as e:
-        return {"status": "error", "message": f"DB 연결 실패 ㅠㅠ: {str(e)}"}
-=======
         result = db.execute(text("SELECT 1")).scalar()
         return {"status": "success", "message": f"DB connected. Result: {result}"}
     except Exception as e:
         return {"status": "error", "message": f"DB connection failed: {str(e)}"}
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
