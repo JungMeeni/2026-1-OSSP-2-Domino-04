@@ -14,7 +14,7 @@
 //     - 선택된 경로 상세 결과 카드
 // ═══════════════════════════════════════════════════════════
 
-import { type FC, useState, useCallback } from "react";
+import { type FC, useState, useCallback, useEffect } from "react";
 import type { RouteState, RoutePoint, RouteResult, Category, Place } from "../types/type";
 import PlaceSearchInput from "./PlaceSearchInput";
 import PlaceMarker from "./PlaceMarker";
@@ -74,7 +74,7 @@ interface KakaoPlaceItem {
 
 // ── [지도 렌더링] ─────────────────────────────────────────
 
-const drawOnMap = (
+export const drawOnMap = (
   roads:           RouteResult["roads"],
   waypoints:       { lat: number; lng: number; name: string }[],
   kakaoMapRef:     React.MutableRefObject<KakaoMapInstance | null>,
@@ -222,6 +222,11 @@ const RouteOptionCard: FC<{
 
 // ── [MAIN COMPONENT] ──────────────────────────────────────
 
+// 안내 시작 시 경로 탐색 컨텍스트 (추천 탭 vs 직접 입력 탭)
+export type NavRouteCtx =
+  | { type: 'recommend' }
+  | { type: 'manual'; origin: RoutePoint; dest: RoutePoint };
+
 interface RoutePanelProps {
   routeState:      RouteState;
   onSetOrigin:     (p: RoutePoint | null) => void;
@@ -241,8 +246,10 @@ interface RoutePanelProps {
   recRefetch:      () => void;
   // [NAV] 안내 시작/취소
   isNavigating:       boolean;
-  onStartNavigation:  (route: RecommendedRoute) => void;
+  onStartNavigation:  (route: RecommendedRoute, ctx: NavRouteCtx) => void;
   onCancelNavigation: () => void;
+  // [DISASTER] 재난 구역 우회 탐색 시 전달 — ML 백엔드가 해당 구역 장소를 제외
+  disasterZones?: { lat: number; lng: number; radius_m: number }[];
 }
 
 // ── [직접 입력용 경로 후보 3개 생성] ─────────────────────
@@ -398,9 +405,10 @@ const drawWalkingRoute = (
 };
 
 
-const buildManualRoutes = async (
-  origin: RoutePoint,
-  dest:   RoutePoint,
+export const buildManualRoutes = async (
+  origin:        RoutePoint,
+  dest:          RoutePoint,
+  disasterZones?: { lat: number; lng: number; radius_m: number }[],
 ): Promise<RecommendedRoute[]> => {
   // ── Step 1: 출발↔도착 중간 지점 기준 카카오 검색
   const midLat = (origin.lat + dest.lat) / 2;
@@ -458,6 +466,8 @@ const buildManualRoutes = async (
     byCatMap.set(raw.category, arr);
   }
   const top = [...byCatMap.values()].flatMap(arr => arr.slice(0, PER_CAT));
+  // PER_CAT 초과분 — 재난구역 제거 보완용 예비 장소 (TA 평점 조회 없이 전송)
+  const reserveItems = [...byCatMap.values()].flatMap(arr => arr.slice(PER_CAT));
 
   const detailMap = new Map<string, { rating: number; reviews: number } | null | undefined>();
   const needFetch: typeof top = [];
@@ -504,6 +514,24 @@ const buildManualRoutes = async (
     };
   });
 
+  // 예비 장소 입력 조립 (TA 평점 미조회 — 재난구역 제거 시 백엔드 보충용)
+  const extraPlaceInputs = reserveItems.map(({ item, category }) => {
+    const placeLat = parseFloat(item.y);
+    const placeLng = parseFloat(item.x);
+    return {
+      id:          item.id,
+      name:        item.place_name,
+      category,
+      lat:         placeLat,
+      lng:         placeLng,
+      distance:    Math.round(_haversine(origin.lat, origin.lng, placeLat, placeLng)),
+      address:     item.address_name,
+      rating:      0,
+      num_reviews: 0,
+      web_url:     "",
+    };
+  });
+
   // ── Step 4: ML 서버 경로 추천 (MLP 채점 + Held-Karp path + 2-opt path)
   //    user_lat/lng = 출발지, dest_lat/lng = 도착지 → 경유지 순서가 일직선에 가깝게 최적화
   let backendRoutes: _BackendCourse[] = [];
@@ -515,6 +543,10 @@ const buildManualRoutes = async (
         user_lat: origin.lat, user_lng: origin.lng,
         dest_lat: dest.lat,   dest_lng: dest.lng,
         places: placeInputs,
+        ...(disasterZones?.length ? {
+          disaster_zones: disasterZones,
+          extra_places:   extraPlaceInputs,
+        } : {}),
       }),
     });
     if (!mlRes.ok) throw new Error(`ML 서버 오류: ${mlRes.status}`);
@@ -584,6 +616,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
   userLat, userLng, isServicesReady, kakaoMapRef, polylineListRef, overlayListRef,
   recRoutes, recIsLoading, recError, recRefetch,
   isNavigating, onStartNavigation, onCancelNavigation,
+  disasterZones,
 }) => {
   const [panelTab,    setPanelTab]    = useState<"manual" | "recommend">("recommend");
   const [originInput, setOriginInput] = useState<string>("");
@@ -609,6 +642,15 @@ const RoutePanel: FC<RoutePanelProps> = ({
   // 추천 경로 출발지/도착지 PlaceMarker 상태
   const [recOriginPlace, setRecOriginPlace] = useState<Place | null>(null);
   const [recDestPlace,   setRecDestPlace]   = useState<Place | null>(null);
+
+  // 추천 경로 목록이 바뀌면(우회 탐색 결과 수신) 이전 선택 상태 초기화
+  useEffect(() => {
+    setSelectedRouteIdx(null);
+    setRecWalkingData(null);
+    setRecTransportMode("car");
+    setRecOriginPlace(null);
+    setRecDestPlace(null);
+  }, [recRoutes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 추천 탭: 코스 선택 토글
   const handleSelectRoute = useCallback((idx: number) => {
@@ -702,7 +744,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
     polylineListRef.current.forEach(p => p.setMap(null)); overlayListRef.current.forEach(o => o.setMap(null));
     polylineListRef.current = []; overlayListRef.current = [];
     try {
-      const routes = await buildManualRoutes(origin, dest);
+      const routes = await buildManualRoutes(origin, dest, disasterZones);
       if (routes.length === 0) setManualError("추천 경로를 생성하지 못했어요. 다른 장소를 선택해보세요.");
       else setManualRoutes(routes);
     } catch (e) {
@@ -710,7 +752,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
     } finally {
       setManualLoading(false);
     }
-  }, [routeState.origin, routeState.destination, onSetResult, onSetError, polylineListRef, overlayListRef]);
+  }, [routeState.origin, routeState.destination, onSetResult, onSetError, polylineListRef, overlayListRef, disasterZones]);
 
   const handleUseCurrentLoc = useCallback(() => {
     onSetOrigin({ label: "현재 위치", lat: userLat, lng: userLng });
@@ -746,6 +788,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* 상단 탭 */}
       <div style={{ display: "flex", borderBottom: `1px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, flexShrink: 0 }}>
@@ -855,7 +898,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                         />
                         {!isNavigating ? (
                           <button
-                            onClick={() => onStartNavigation(route)}
+                            onClick={() => onStartNavigation(route, { type: 'recommend' })}
                             style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
                           >
                             🗺 안내 시작
@@ -1035,7 +1078,11 @@ const RoutePanel: FC<RoutePanelProps> = ({
                           <button
                             onClick={() => {
                               sendRouteFeedback(route, manualRoutes.filter((_, j) => j !== i));
-                              onStartNavigation(route);
+                              onStartNavigation(route, {
+                                type:   'manual',
+                                origin: routeState.origin!,
+                                dest:   routeState.destination!,
+                              });
                             }}
                             style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
                           >

@@ -25,11 +25,21 @@ import { COLOR_INACTIVE, COLOR_TEXT_MAIN } from "../colors";
 import type { KakaoMapInstance, KakaoMarker, KakaoOverlay } from "../types/type_kakao";
 import { fetchTaDetail, fetchTaLocationId } from "../hooks/Usekakaonearby";
 
-const COLOR_PIN        = "#3B7DFF";
-const COLOR_PIN_ACTIVE = "#2563EB";
+const COLOR_PIN = "#3B7DFF";
 
 const CATEGORY_ICON: Record<Category, string> = {
   카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍", 식당: "🍽️"
+};
+
+// 카테고리별 핀 색상 — pinColor prop이 없을 때 카테고리로 색상 결정
+const CATEGORY_PIN_COLOR: Record<Category, string> = {
+  카페:   "#b45309",
+  갤러리: "#7c3aed",
+  공원:   "#16a34a",
+  명소:   "#1d4ed8",
+  문화:   "#0e7490",
+  거리:   "#be185d",
+  식당:   "#d97706",
 };
 
 interface PlaceMarkerProps {
@@ -82,9 +92,11 @@ const PlaceMarker: FC<PlaceMarkerProps> = ({
   useEffect(() => {
     if (!kakaoMapRef.current) return;
 
+    // pinColor prop이 없으면 카테고리별 색상 사용
+    const catColor = CATEGORY_PIN_COLOR[place.category] ?? COLOR_PIN;
     const resolvedPinColor = pinColor
       ? (isActive ? pinColor : COLOR_INACTIVE)
-      : isSelected && isActive ? COLOR_PIN_ACTIVE : isActive ? COLOR_PIN : COLOR_INACTIVE;
+      : isActive ? catColor : COLOR_INACTIVE;
     const size         = isSelected && isActive ? 42 : 34;
     const opacity      = isActive ? (isDeemphasized ? 0.4 : 1) : 0.3;
     const pos          = new window.kakao.maps.LatLng(place.lat, place.lng);
@@ -103,7 +115,9 @@ const PlaceMarker: FC<PlaceMarkerProps> = ({
           ${hideCategoryIcon ? "" : categoryIcon + " "}${place.name}${ratingText}
           <div style="position:absolute;bottom:-7px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid ${resolvedPinColor};"></div>
         </div>` : ""}
-      <div style="width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${resolvedPinColor};border:2.5px solid #fff;box-shadow:${isSelected ? "0 4px 14px rgba(59,125,255,0.45)" : "0 2px 8px rgba(0,0,0,0.18)"};transition:all 0.25s;"></div>
+      <div style="width:${size}px;height:${size}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${resolvedPinColor};border:2.5px solid #fff;box-shadow:${isSelected ? "0 4px 14px rgba(0,0,0,0.32)" : "0 2px 8px rgba(0,0,0,0.18)"};transition:all 0.25s;display:flex;align-items:center;justify-content:center;">
+        <span style="transform:rotate(45deg);font-size:${Math.round(size * 0.42)}px;line-height:1;user-select:none;">${categoryIcon}</span>
+      </div>
       <div style="margin-top:3px;font-size:10px;font-weight:${isSelected ? 800 : 600};color:${isActive ? COLOR_TEXT_MAIN : COLOR_INACTIVE};white-space:nowrap;text-shadow:0 1px 3px rgba(255,255,255,0.9);font-family:'Noto Sans KR',sans-serif;transition:all 0.25s;">${place.name}</div>`;
 
     overlayRef.current?.setMap(null);

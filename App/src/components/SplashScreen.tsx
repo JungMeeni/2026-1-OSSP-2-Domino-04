@@ -17,7 +17,7 @@ import { COLOR_PRIMARY, COLOR_PRIMARY_DARK } from "../colors";
 // [CONFIG] 실제 로고/이미지로 교체 시 이 경로만 수정
 // 예: import splashImg from "../assets/splash_logo.png";
 //     const SPLASH_IMAGE_SRC = splashImg;
-const SPLASH_IMAGE_SRC: string | null = null; // null이면 SVG 플레이스홀더 표시
+const SPLASH_IMAGE_SRC = "./Lin-K-transparent.png"; // null이면 SVG 플레이스홀더 표시
 
 // [CONFIG] 페이드아웃 시작 딜레이 (ms) — isLoading=false 직후 시작
 const FADE_DURATION_MS = 400;
@@ -76,6 +76,9 @@ const SplashScreen: FC<SplashScreenProps> = ({ isLoading }) => {
         <div style={{
           animation: "splash-pulse 2s ease-in-out infinite",
           marginBottom: 40,
+          background: "rgba(255,255,255)",
+          borderRadius: 24,
+          padding: 12,
         }}>
           {SPLASH_IMAGE_SRC
             ? (
@@ -115,7 +118,7 @@ const SplashScreen: FC<SplashScreenProps> = ({ isLoading }) => {
           marginBottom:  8,
           textShadow:    "0 2px 12px rgba(0,0,0,0.15)",
         }}>
-          공개SW 프로젝트
+          Lin-K
         </div>
         <div style={{
           fontSize:   13,

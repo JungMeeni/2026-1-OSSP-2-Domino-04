@@ -1,24 +1,15 @@
 // ═══════════════════════════════════════════════════════════
-// RouteScreen — 앱 루트 화면: 풀스크린 지도 + FAB + 바텀 시트
+// RouteScreen — 앱 루트 화면 (PC/태블릿 좌우 분할 구조)
 //
 // [구조]
-//   풀스크린 카카오 지도 위에 아래 레이어가 쌓인다:
-//     - 상단 검색창 (장소 키워드 검색 + 드롭다운 + 현위치 버튼)
-//     - FAB (+버튼) → "주변 탐색" / "경로 탐색" 메뉴 펼침
-//     - 하프/풀 바텀 시트 (드래그 리사이즈)
-//
-//   탭별 바텀 시트 내용:
-//     nearby — 반경 선택 + PlaceCard 목록 (NearByMap 지도 오버레이 연동)
-//     route  — RoutePanel (추천 경로 + 직접 입력 통합)
-//
-// [Google 로그인]
-//   @react-oauth/google 사용. 프로필 이미지를 검색창 우측에 표시
-//
-// [내부 훅]
-//   useUserLocation     — geolocation으로 현위치 취득
-//   useKakaoNearby      — 반경 내 장소 목록 fetch
-//   useRecommendedRoute — 추천 경로 fetch
-//   usePlaceSearch      — 검색창 상태 관리
+//   Flexbox 좌우 분할 (100vw, 100vh)
+//   - 좌측: 사이드바 (고정 너비 420px)
+//       - 상단: 탭 (주변 탐색 / 경로 탐색)
+//       - 하단: 탭별 콘텐츠 스크롤 영역 (Nearby / RoutePanel)
+//   - 우측: 카카오 지도 영역 (flex: 1, relative)
+//       - 상단(absolute): 검색창 + 구글 로그인 + 현위치 버튼
+//       - 하단(absolute): 재난 경로 선택 모달
+//       - 마커, 재난 오버레이, 재난 알림 배너 등 배치
 // ═══════════════════════════════════════════════════════════
 
 import { useState, useRef, useEffect, useCallback, type FC } from "react";
@@ -35,18 +26,20 @@ import type {
 import {
   COLOR_BG, COLOR_BORDER, COLOR_INACTIVE,
   COLOR_PRIMARY, COLOR_SURFACE, COLOR_TEXT_MAIN, COLOR_TEXT_SUB,
+  COLOR_DANGER,
 } from "../colors";
 
 import { useKakaoNearby }      from "../hooks/Usekakaonearby";
-import { useRecommendedRoute } from "../hooks/Userecommendedroute";
-import { useDisasterAlert }    from "../hooks/UseDisasterAlert";
+import { useRecommendedRoute, type RecommendedRoute, type DisasterZoneInfo } from "../hooks/Userecommendedroute";
+import { useDisasterAlert, type DisasterAlert } from "../hooks/UseDisasterAlert";
+import { formatDuration, formatDistance }        from "../utils/Utils";
 
 import PlaceCard  from "./PlaceCard";
 import DisasterAlertBanner from "./DisasterAlertBanner";
 import DisasterStatusChip  from "./DisasterStatusChip";
 import DisasterZoneOverlay from "./DisasterZoneOverlay";
 import NearbyMap  from "./NearByMap";
-import RoutePanel from "./RoutePanel";
+import RoutePanel, { buildManualRoutes, drawOnMap, type NavRouteCtx } from "./RoutePanel";
 import PlaceMarker from "./PlaceMarker";
 import { kakaoResultToPlace } from "../utils/Utils";
 import { usePlaceSearch } from "../hooks/UsePlaceSearch";
@@ -67,21 +60,16 @@ const RADIUS_OPTION_LIST = [
   { label: "넓은 곳",   meter: 1000 },
 ] as const;
 
-const CATEGORY_ICON: Record<Category, string> = {
-  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍", 식당: "🍽️"
-};
-
-const IconNearby: FC = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+const IconNearby: FC<{color?: string}> = ({color = "currentColor"}) => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3" /><circle cx="12" cy="12" r="8" strokeOpacity="0.5" />
     <line x1="12" y1="2" x2="12" y2="5" /><line x1="12" y1="19" x2="12" y2="22" />
     <line x1="2" y1="12" x2="5" y2="12" /><line x1="19" y1="12" x2="22" y2="12" />
   </svg>
 );
 
-// [CHANGED] route 탭 아이콘 — 별 + 경로 조합
-const IconRoute: FC = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+const IconRoute: FC<{color?: string}> = ({color = "currentColor"}) => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" />
     <path d="M6 17V9a6 6 0 0 1 6-6h2" /><path d="M18 7v8a6 6 0 0 1-6 6H10" />
   </svg>
@@ -96,20 +84,10 @@ const IconGoogle: FC = () => (
   </svg>
 );
 
-// [CHANGED] FAB 메뉴 2개로 단순화
-const MENU_ITEM_LIST: { id: Tab; Icon: FC; label: string }[] = [
+const MENU_ITEM_LIST: { id: Tab; Icon: FC<{color?: string}>; label: string }[] = [
   { id: "nearby", Icon: IconNearby, label: "주변 탐색" },
   { id: "route",  Icon: IconRoute,  label: "경로 탐색" },
 ];
-
-const TAB_HEADER: Record<string, { sub: string; main: string }> = {
-  nearby: { sub: "NEARBY EXPLORE", main: "근처 인기 장소 탐색" },
-  route:  { sub: "ROUTE PLANNING", main: "경로 탐색"           },
-};
-
-const SHEET_HEIGHT_HALF = 48;
-const SHEET_HEIGHT_FULL = 88;
-const DRAG_THRESHOLD    = 60;
 
 type GoogleUserProfile = { name: string; email: string; picture: string };
 
@@ -160,18 +138,281 @@ const useUserLocation = (): UserLocation => {
 };
 
 // ═══════════════════════════════════════════════════════════
-// RouteScreen
+// RouteScreen / Disaster Modal & Helper
 // ═══════════════════════════════════════════════════════════
 
-type SheetState = "hidden" | "half" | "full";
+const _haversineM = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const R = 6_371_000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const routePassesThroughAlert = (route: RecommendedRoute, alert: DisasterAlert): boolean => {
+  if (!alert.lat || !alert.lng) return false;
+  const radius = alert.radiusM ?? 2000;
+  for (const place of route.places) {
+    if (_haversineM(place.lat, place.lng, alert.lat, alert.lng) < radius) return true;
+  }
+  for (const road of route.roads) {
+    for (let i = 0; i < road.vertexes.length - 1; i += 2) {
+      if (_haversineM(road.vertexes[i + 1], road.vertexes[i], alert.lat, alert.lng) < radius) return true;
+    }
+  }
+  return false;
+};
+
+const _MODAL_CLR: Record<string, { main: string; light: string; border: string }> = {
+  호우:     { main: "#2563EB", light: "#EFF6FF", border: "#BFDBFE" },
+  교통통제: { main: "#F5A623", light: "#FFFBEB", border: "#FDD99A" },
+  긴급재난: { main: COLOR_DANGER, light: "#FFF1F2", border: "#FECDD3" },
+};
+const _MODAL_ICON: Record<string, string> = { 호우: "🌧️", 교통통제: "🚧", 긴급재난: "🚨" };
+const _DST_SEVERITY: Record<string, number> = { 긴급재난: 2, 교통통제: 1, 호우: 0 };
+const _fmtDiff = (sec: number) => {
+  const sign = sec >= 0 ? "+" : "-";
+  const m = Math.round(Math.abs(sec) / 60);
+  return m >= 60 ? `${sign}${Math.floor(m / 60)}시간 ${m % 60}분` : `${sign}${m}분`;
+};
+const _fmtDistDiff = (meter: number) => {
+  const sign = meter >= 0 ? "+" : "-";
+  const abs  = Math.abs(meter);
+  return abs >= 1000 ? `${sign}${(abs / 1000).toFixed(1)}km` : `${sign}${abs}m`;
+};
+
+const ROUTE_COLOR_ORIG   = "#f97316"; 
+const ROUTE_COLOR_DETOUR = "#16a34a"; 
+
+const DisasterRouteChoiceModal: FC<{
+  route:          RecommendedRoute;
+  alerts:         DisasterAlert[];
+  detourRoutes:   RecommendedRoute[];
+  detourLoading:  boolean;
+  onKeep:         () => void;
+  onDetour:       () => void;
+  onSelectDetour: (r: RecommendedRoute) => void;
+  onPreviewDetour:(d: RecommendedRoute | null) => void; 
+  onClose:        () => void;
+}> = ({ route, alerts, detourRoutes, detourLoading, onKeep, onDetour, onSelectDetour, onPreviewDetour, onClose }) => {
+  const [comparing,     setComparing]     = useState(false);
+  const [selectedDetour, setSelectedDetour] = useState<RecommendedRoute | null>(null);
+
+  const primary = alerts.reduce((a, b) =>
+    (_DST_SEVERITY[a.dstSeNm] ?? 0) >= (_DST_SEVERITY[b.dstSeNm] ?? 0) ? a : b
+  );
+  const c = _MODAL_CLR[primary.dstSeNm] ?? _MODAL_CLR["긴급재난"];
+  const matchedDetour = detourRoutes.find(d => d.label === route.label) ?? null;
+
+  const handleDetourClick = () => { setComparing(true); setSelectedDetour(null); onPreviewDetour(null); onDetour(); };
+  const handleBack = () => { setComparing(false); setSelectedDetour(null); onPreviewDetour(null); };
+  const handleCardClick = (detour: RecommendedRoute) => {
+    const next = selectedDetour?.label === detour.label ? null : detour;
+    setSelectedDetour(next);
+    onPreviewDetour(next);
+  };
+
+  return (
+    <>
+      <style>{`
+        @keyframes disasterModalUp {
+          from { transform: translateY(100%); opacity: 0; }
+          to   { transform: translateY(0);    opacity: 1; }
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+      
+      {/* 1. 사이드바 영역(relative) 내부에 꽉 차는 반투명 배경 + 사방 24px 여백 */}
+      <div onClick={comparing ? undefined : onClose} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 960, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: "24px", fontFamily: "'Noto Sans KR', sans-serif" }}>
+        
+        {/* 2. 플로팅 카드 스타일 (사이드바 내부 크기에 맞춰 maxHeight 조정) */}
+        <div onClick={e => e.stopPropagation()} style={{ width: "100%", background: COLOR_SURFACE, borderRadius: "24px", borderTop: `4px solid ${c.border}`, boxShadow: "0 12px 36px rgba(0,0,0,0.25)", maxHeight: "calc(100% - 48px)", display: "flex", flexDirection: "column", animation: "disasterModalUp 0.35s cubic-bezier(0.34,1.56,0.64,1) forwards" }}>
+          
+          <div style={{ padding: "16px 20px 10px", flexShrink: 0 }}>
+            <div style={{ width: 36, height: 4, background: COLOR_BORDER, borderRadius: 2, margin: "0 auto 16px" }} />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {comparing && <button onClick={handleBack} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", padding: "0 4px 0 0", color: COLOR_TEXT_SUB, lineHeight: 1 }}>←</button>}
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 5, background: c.main, color: "#fff", fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20 }}>
+                  <span>{_MODAL_ICON[primary.dstSeNm]}</span>
+                  <span>{comparing ? "우회 경로 비교" : alerts.length > 1 ? `재난 ${alerts.length}건 경고` : `${primary.dstSeNm} 경고`}</span>
+                </div>
+              </div>
+              <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 16, color: COLOR_TEXT_SUB, cursor: "pointer" }}>✕</button>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "4px 20px 32px" }}>
+            {!comparing ? (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+                  {alerts.map(alert => {
+                    const ac = _MODAL_CLR[alert.dstSeNm] ?? _MODAL_CLR["긴급재난"];
+                    return (
+                      <div key={alert.id} style={{ background: ac.light, borderRadius: 12, padding: "10px 14px", border: `1px solid ${ac.border}`, fontSize: 12, color: COLOR_TEXT_MAIN, lineHeight: 1.65 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, background: ac.main, color: "#fff", fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10 }}>
+                            <span>{_MODAL_ICON[alert.dstSeNm]}</span><span>{alert.dstSeNm}</span>
+                          </span>
+                          <span style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{alert.rcptnRgnNm} · {alert.crtDt}</span>
+                        </div>
+                        {alert.summary}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN, marginBottom: 10 }}>선택한 경로가 {alerts.length}개의 재난 구역을 통과합니다</div>
+                <div style={{ background: COLOR_BG, borderRadius: 10, padding: "10px 14px", marginBottom: 16, border: `1px solid ${COLOR_BORDER}`, display: "flex", gap: 12, alignItems: "center" }}>
+                  <span style={{ fontSize: 20 }}>{route.emoji}</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN }}>{route.label}</div>
+                    {route.totalDuration > 0 && <div style={{ fontSize: 12, color: COLOR_TEXT_SUB, marginTop: 2 }}>{formatDuration(route.totalDuration)} · {formatDistance(route.totalDistance)}</div>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <button onClick={handleDetourClick} style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: `1.5px solid ${c.border}`, background: c.light, cursor: "pointer", fontSize: 14, fontWeight: 700, color: c.main, fontFamily: "'Noto Sans KR', sans-serif" }}>🗺 재난 구역 제외 우회 경로 비교</button>
+                  <button onClick={onKeep} style={{ width: "100%", padding: "14px 0", borderRadius: 12, border: `1.5px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, cursor: "pointer", fontSize: 14, fontWeight: 700, color: COLOR_TEXT_MAIN, fontFamily: "'Noto Sans KR', sans-serif" }}>현재 경로 유지 (재난 구간 통과)</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <div style={{ width: 10, height: 3, borderRadius: 2, background: ROUTE_COLOR_ORIG }} />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: ROUTE_COLOR_ORIG }}>현재 선택 경로</span>
+                  </div>
+                  <div style={{ background: "#fff7ed", borderRadius: 12, padding: "12px 14px", border: `1.5px solid #fed7aa`, display: "flex", alignItems: "flex-start", gap: 12 }}>
+                    <span style={{ fontSize: 22, marginTop: 2 }}>{route.emoji}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                        <span style={{ fontSize: 14, fontWeight: 800, color: COLOR_TEXT_MAIN }}>{route.label}</span>
+                        <span style={{ fontSize: 9, background: ROUTE_COLOR_ORIG, color: "#fff", padding: "1px 6px", borderRadius: 4, fontWeight: 700 }}>⚠ 재난구역 통과</span>
+                      </div>
+                      {route.totalDuration > 0 && (
+                        <div style={{ display: "flex", gap: 10, marginBottom: 4 }}>
+                          <span style={{ fontSize: 14, fontWeight: 800, color: ROUTE_COLOR_ORIG }}>{formatDuration(route.totalDuration)}</span>
+                          <span style={{ fontSize: 12, color: COLOR_TEXT_SUB, alignSelf: "flex-end" }}>{formatDistance(route.totalDistance)}</span>
+                          {route.taxiFare > 0 && <span style={{ fontSize: 11, color: COLOR_TEXT_SUB, alignSelf: "flex-end" }}>🚕 {route.taxiFare.toLocaleString()}원</span>}
+                        </div>
+                      )}
+                      {route.places.length > 0 && <div style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{route.places.map(p => p.name).join(" → ")}</div>}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                  <div style={{ flex: 1, height: 1, background: COLOR_BORDER }} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <div style={{ width: 10, height: 3, borderRadius: 2, background: ROUTE_COLOR_DETOUR }} />
+                    <span style={{ fontSize: 11, fontWeight: 600, color: ROUTE_COLOR_DETOUR, whiteSpace: "nowrap" }}>우회 경로 후보</span>
+                  </div>
+                  <div style={{ flex: 1, height: 1, background: COLOR_BORDER }} />
+                </div>
+
+                {detourLoading ? (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "32px 0", color: COLOR_TEXT_SUB }}>
+                    <div style={{ width: 28, height: 28, border: `3px solid ${COLOR_PRIMARY}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                    <span style={{ fontSize: 13 }}>{route.label} 우회 코스 탐색 중...</span>
+                  </div>
+                ) : !matchedDetour ? (
+                  <div style={{ textAlign: "center", color: COLOR_TEXT_SUB, fontSize: 13, padding: "24px 0" }}>동일 코스의 우회 경로를 찾지 못했습니다</div>
+                ) : (() => {
+                  const detour = matchedDetour;
+                  const dSec  = detour.totalDuration  - route.totalDuration;
+                  const dDist = detour.totalDistance  - route.totalDistance;
+                  const isSelected = selectedDetour?.label === detour.label;
+                  return (
+                    <div>
+                      <div onClick={() => handleCardClick(detour)} style={{ borderRadius: 14, border: `2px solid ${isSelected ? ROUTE_COLOR_DETOUR : COLOR_BORDER}`, background: isSelected ? "#f0fdf4" : COLOR_SURFACE, padding: "14px 16px", cursor: "pointer", transition: "all 0.18s" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                          <span style={{ fontSize: 20 }}>{detour.emoji}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
+                              <span style={{ fontSize: 13, fontWeight: 800, color: COLOR_TEXT_MAIN }}>{detour.label}</span>
+                              <span style={{ fontSize: 9, background: ROUTE_COLOR_DETOUR, color: "#fff", padding: "1px 6px", borderRadius: 4, fontWeight: 700 }}>✓ 안전 우회</span>
+                            </div>
+                            <div style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{detour.description}</div>
+                          </div>
+                          <span style={{ fontSize: 11, color: isSelected ? ROUTE_COLOR_DETOUR : COLOR_TEXT_SUB, fontWeight: isSelected ? 700 : 400 }}>{isSelected ? "▲ 접기" : "▼ 상세"}</span>
+                        </div>
+                        {detour.totalDuration > 0 && (
+                          <div style={{ display: "flex", gap: 14, alignItems: "baseline", marginBottom: 6 }}>
+                            <div>
+                              <span style={{ fontSize: 15, fontWeight: 800, color: ROUTE_COLOR_DETOUR }}>{formatDuration(detour.totalDuration)}</span>
+                              <span style={{ fontSize: 11, marginLeft: 4, fontWeight: 700, color: dSec <= 0 ? ROUTE_COLOR_DETOUR : "#f59e0b" }}>({_fmtDiff(dSec)})</span>
+                            </div>
+                            <div>
+                              <span style={{ fontSize: 12, color: COLOR_TEXT_SUB }}>{formatDistance(detour.totalDistance)}</span>
+                              <span style={{ fontSize: 10, marginLeft: 3, fontWeight: 600, color: dDist <= 0 ? ROUTE_COLOR_DETOUR : "#f59e0b" }}>({_fmtDistDiff(dDist)})</span>
+                            </div>
+                            {detour.taxiFare > 0 && <span style={{ fontSize: 11, color: COLOR_TEXT_SUB }}>🚕 {detour.taxiFare.toLocaleString()}원</span>}
+                          </div>
+                        )}
+                        {!isSelected && detour.places.length > 0 && (
+                          <div style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{detour.places.slice(0, 3).map(p => p.name).join(" → ")}{detour.places.length > 3 ? " ..." : ""}</div>
+                        )}
+                      </div>
+
+                      {isSelected && (
+                        <div style={{ marginTop: 10, borderRadius: 14, border: `1px solid ${COLOR_BORDER}`, overflow: "hidden" }}>
+                          <div style={{ background: COLOR_BG, padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 20, borderBottom: `1px solid ${COLOR_BORDER}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5 }}><div style={{ width: 18, height: 3, borderRadius: 2, background: ROUTE_COLOR_ORIG }} /><span style={{ fontSize: 10, fontWeight: 700, color: ROUTE_COLOR_ORIG }}>현재 경로</span></div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 5 }}><div style={{ width: 18, height: 3, borderRadius: 2, background: ROUTE_COLOR_DETOUR }} /><span style={{ fontSize: 10, fontWeight: 700, color: ROUTE_COLOR_DETOUR }}>우회 경로</span></div>
+                          </div>
+                          <div style={{ display: "flex" }}>
+                            <div style={{ flex: 1, padding: "12px 12px", borderRight: `1px solid ${COLOR_BORDER}` }}>
+                              <span style={{ fontSize: 9, background: ROUTE_COLOR_ORIG, color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700, display: "inline-block", marginBottom: 8 }}>⚠ 재난구역 통과</span>
+                              {route.totalDuration > 0 && (
+                                <>
+                                  <div style={{ fontSize: 16, fontWeight: 800, color: ROUTE_COLOR_ORIG }}>{formatDuration(route.totalDuration)}</div>
+                                  <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, marginBottom: 10 }}>{formatDistance(route.totalDistance)}{route.taxiFare > 0 ? ` · 🚕${route.taxiFare.toLocaleString()}원` : ""}</div>
+                                </>
+                              )}
+                              <div style={{ fontSize: 10, color: COLOR_TEXT_SUB, lineHeight: 1.9 }}>{route.places.map((p, i) => <div key={i}>📍 {p.name}</div>)}</div>
+                            </div>
+                            <div style={{ flex: 1, padding: "12px 12px" }}>
+                              <span style={{ fontSize: 9, background: ROUTE_COLOR_DETOUR, color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700, display: "inline-block", marginBottom: 8 }}>✓ 안전 우회</span>
+                              {detour.totalDuration > 0 && (
+                                <>
+                                  <div style={{ fontSize: 16, fontWeight: 800, color: ROUTE_COLOR_DETOUR }}>{formatDuration(detour.totalDuration)}</div>
+                                  <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, marginBottom: 10 }}>{formatDistance(detour.totalDistance)}{detour.taxiFare > 0 ? ` · 🚕${detour.taxiFare.toLocaleString()}원` : ""}</div>
+                                </>
+                              )}
+                              <div style={{ fontSize: 10, color: COLOR_TEXT_SUB, lineHeight: 1.9 }}>{detour.places.map((p, i) => <div key={i}>📍 {p.name}</div>)}</div>
+                            </div>
+                          </div>
+                          <div style={{ padding: "12px 14px", borderTop: `1px solid ${COLOR_BORDER}` }}>
+                            <button onClick={() => onSelectDetour(detour)} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "none", background: ROUTE_COLOR_DETOUR, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}>🗺 이 경로로 안내 시작</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
 
 const RouteScreen: FC = () => {
-  const [activeTab,     setActiveTab]     = useState<Tab | null>(null);
-  // [NAV] 안내 중 상태
+  const [activeTab, setActiveTab] = useState<Tab>("nearby");
+
   const [isNavigating,  setIsNavigating]  = useState<boolean>(false);
-  const [navRoute,      setNavRoute]      = useState<import("../hooks/Userecommendedroute").RecommendedRoute | null>(null);
-  const [sheetState, setSheetState] = useState<SheetState>("hidden");
-  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
+  const [navRoute,      setNavRoute]      = useState<RecommendedRoute | null>(null);
+
+  const [pendingNavRoute,      setPendingNavRoute]      = useState<RecommendedRoute | null>(null);
+  const [pendingNavAlerts,     setPendingNavAlerts]     = useState<DisasterAlert[]>([]);
+  const [pendingNavCtx,        setPendingNavCtx]        = useState<NavRouteCtx | null>(null);
+  const [showDisasterModal,    setShowDisasterModal]    = useState<boolean>(false);
+  const [detourDisasterZones,  setDetourDisasterZones]  = useState<DisasterZoneInfo[]>([]);
+
+  const [detourManualRoutes,   setDetourManualRoutes]   = useState<RecommendedRoute[]>([]);
+  const [detourManualLoading,  setDetourManualLoading]  = useState<boolean>(false);
   const [googleUser, setGoogleUser] = useState<GoogleUserProfile | null>(null);
 
   const [selectedRadiusIdx,    setSelectedRadiusIdx]    = useState<number>(1);
@@ -189,28 +430,19 @@ const RouteScreen: FC = () => {
   const [isMapReady,      setIsMapReady]      = useState<boolean>(false);
   const [isServicesReady, setIsServicesReady] = useState<boolean>(false);
 
-  // 공유 지도 레이어 ref
   const polylineListRef = useRef<KakaoPolyline[]>([]);
   const overlayListRef  = useRef<KakaoOverlay[]>([]);
 
   const { lat: userLat, lng: userLng, isLocating, locLabel } = useUserLocation();
-  const dragStartYRef = useRef<number>(0);
-  const isDraggingRef = useRef<boolean>(false);
-  const sheetElRef    = useRef<HTMLDivElement>(null);
   const radiusConfig  = RADIUS_OPTION_LIST[selectedRadiusIdx];
 
-  // 주변 탐색
   const { placeList: kakaoPlaceList, isLoading: kakaoIsLoading, error: kakaoError, refetch: kakaoRefetch } =
     useKakaoNearby({ userLat, userLng, radiusMeter: radiusConfig.meter, enabled: activeTab === "nearby" && !isLocating && isServicesReady });
 
-  // [CHANGED] 추천 경로 — route 탭이 열릴 때 활성화
   const { routes: recRoutes, isLoading: recIsLoading, error: recError, refetch: recRefetch } =
-    useRecommendedRoute({ userLat, userLng, enabled: activeTab === "route" && !isLocating && isServicesReady });
+    useRecommendedRoute({ userLat, userLng, enabled: activeTab === "route" && !isLocating && isServicesReady, disasterZones: detourDisasterZones });
 
-  // [API] 재난 알림 큐 — useMock=true: Mock 데이터, false: 실제 API 연동
-  const { currentAlert, alertQueue, remainingSec, dismissCurrent } = useDisasterAlert(false);
-
-  // [CONFIG] 활성 재난 목록 — 배너 닫혀도 지도에 계속 표시
+  const { currentAlert, alertQueue, remainingSec, dismissCurrent } = useDisasterAlert(true);
   const activeAlerts = alertQueue;
 
   const handleGoogleLogin = useGoogleLogin({
@@ -260,6 +492,46 @@ const RouteScreen: FC = () => {
     polylineListRef.current = []; overlayListRef.current = [];
   }, []);
 
+  const handlePreviewDetour = useCallback((detour: RecommendedRoute | null) => {
+    clearMapLayers();
+    if (!detour || !pendingNavRoute || !kakaoMapRef.current || !isMapReady) return;
+    const map = kakaoMapRef.current;
+
+    const drawRoute = (roads: RecommendedRoute["roads"], color: string, style: string) => {
+      roads.forEach(road => {
+        const path: object[] = [];
+        for (let i = 0; i < road.vertexes.length - 1; i += 2)
+          path.push(new window.kakao.maps.LatLng(road.vertexes[i + 1], road.vertexes[i]));
+        if (path.length < 2) return;
+        polylineListRef.current.push(new window.kakao.maps.Polyline({
+          map, path, strokeWeight: 6, strokeColor: color, strokeOpacity: style === "solid" ? 0.9 : 0.7, strokeStyle: style,
+        }));
+      });
+    };
+    drawRoute(pendingNavRoute.roads, ROUTE_COLOR_ORIG,   "shortdot");
+    drawRoute(detour.roads,          ROUTE_COLOR_DETOUR, "solid");
+
+    const addLabel = (roads: RecommendedRoute["roads"], text: string, color: string) => {
+      const allV = roads.flatMap(r => r.vertexes);
+      if (allV.length < 4) return;
+      const mi = Math.floor((allV.length / 4)) * 2;
+      const el = document.createElement("div");
+      el.innerHTML = `<div style="background:${color};color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px;white-space:nowrap;font-family:'Noto Sans KR',sans-serif;">${text}</div>`;
+      overlayListRef.current.push(new window.kakao.maps.CustomOverlay({
+        map, content: el, zIndex: 20, position: new window.kakao.maps.LatLng(allV[mi + 1], allV[mi]),
+      }));
+    };
+    addLabel(pendingNavRoute.roads, "🟠 현재 경로", ROUTE_COLOR_ORIG);
+    addLabel(detour.roads,          "🟢 우회 경로", ROUTE_COLOR_DETOUR);
+
+    const bounds = new window.kakao.maps.LatLngBounds();
+    [...pendingNavRoute.roads, ...detour.roads].forEach(road => {
+      for (let i = 0; i < road.vertexes.length - 1; i += 2)
+        bounds.extend(new window.kakao.maps.LatLng(road.vertexes[i + 1], road.vertexes[i]));
+    });
+    map.setBounds(bounds, 60, 60, 60, 520);
+  }, [clearMapLayers, pendingNavRoute, kakaoMapRef, isMapReady, polylineListRef, overlayListRef]);
+
   const handleMoveToCurrentLoc = useCallback(() => {
     if (!kakaoMapRef.current || !isMapReady) return;
     kakaoMapRef.current.setCenter(new window.kakao.maps.LatLng(userLat, userLng));
@@ -268,41 +540,79 @@ const RouteScreen: FC = () => {
   const handleMenuSelect = useCallback((tab: Tab) => {
     if (tab !== activeTab) clearMapLayers();
     setActiveTab(tab);
-    setIsMenuOpen(false);
-    // [NAV] 안내 중이면 시트 열어서 상세 표시, 아니면 half
-    setSheetState("half");
   }, [activeTab, clearMapLayers]);
 
-  // [NAV] 안내 시작
-  const handleStartNavigation = useCallback((route: import("../hooks/Userecommendedroute").RecommendedRoute) => {
-    setNavRoute(route);
-    setIsNavigating(true);
-    setSheetState("hidden");
-  }, []);
+  const handleStartNavigation = useCallback((route: RecommendedRoute, ctx: NavRouteCtx) => {
+    const affected = activeAlerts.filter(a => routePassesThroughAlert(route, a));
+    if (affected.length > 0) {
+      setPendingNavRoute(route);
+      setPendingNavAlerts(affected);
+      setPendingNavCtx(ctx);
+      setShowDisasterModal(true);
+    } else {
+      setNavRoute(route);
+      setIsNavigating(true);
+    }
+  }, [activeAlerts]);
 
-  // [NAV] 안내 취소
+  const handleConfirmNavigation = useCallback(() => {
+    if (!pendingNavRoute) return;
+    setNavRoute(pendingNavRoute);
+    setIsNavigating(true);
+    setShowDisasterModal(false);
+    setPendingNavRoute(null);
+    setPendingNavAlerts([]);
+    setPendingNavCtx(null);
+    setDetourDisasterZones([]);
+    setDetourManualRoutes([]);
+  }, [pendingNavRoute]);
+
+  const handleDetourSearch = useCallback(async () => {
+    const zones: DisasterZoneInfo[] = activeAlerts
+      .filter(a => a.lat && a.lng)
+      .map(a => ({ lat: a.lat!, lng: a.lng!, radius_m: a.radiusM ?? 2000 }));
+    setDetourDisasterZones(zones);
+
+    if (pendingNavCtx?.type === 'manual') {
+      setDetourManualLoading(true);
+      setDetourManualRoutes([]);
+      try {
+        const routes = await buildManualRoutes(pendingNavCtx.origin, pendingNavCtx.dest, zones);
+        setDetourManualRoutes(routes);
+      } catch (e) {
+        console.error("[DetourSearch] 직접 입력 우회 경로 탐색 실패:", e);
+      } finally {
+        setDetourManualLoading(false);
+      }
+    } else {
+      recRefetch();
+    }
+  }, [activeAlerts, pendingNavCtx, recRefetch]);
+
+  const handleSelectDetour = useCallback((detourRoute: RecommendedRoute) => {
+    clearMapLayers();
+    if (kakaoMapRef.current && isMapReady && detourRoute.roads.length > 0) {
+      const isManual = pendingNavCtx?.type === 'manual';
+      const waypoints = (isManual ? detourRoute.places : detourRoute.places.slice(0, -1))
+        .map(p => ({ lat: p.lat, lng: p.lng, name: p.name }));
+      drawOnMap(detourRoute.roads, waypoints, kakaoMapRef, polylineListRef, overlayListRef);
+    }
+    setNavRoute(detourRoute);
+    setIsNavigating(true);
+    setShowDisasterModal(false);
+    setPendingNavRoute(null);
+    setPendingNavAlerts([]);
+    setPendingNavCtx(null);
+    setDetourDisasterZones([]);
+    setDetourManualRoutes([]);
+  }, [clearMapLayers, kakaoMapRef, isMapReady, pendingNavCtx, polylineListRef, overlayListRef]);
+
   const handleCancelNavigation = useCallback(() => {
     setIsNavigating(false);
     setNavRoute(null);
+    setDetourDisasterZones([]);
     clearMapLayers();
-    setSheetState("half");
   }, [clearMapLayers]);
-
-  const handleCloseSheet = useCallback(() => {
-    setSheetState("hidden");
-    setTimeout(() => setActiveTab(null), 300);
-  }, []);
-
-  const handleDragStart = useCallback((y: number) => { isDraggingRef.current = true; dragStartYRef.current = y; }, []);
-  const handleDragEnd   = useCallback((y: number) => {
-    if (!isDraggingRef.current) return;
-    isDraggingRef.current = false;
-    const delta = y - dragStartYRef.current;
-    if (sheetState === "half") {
-      if (delta < -DRAG_THRESHOLD) setSheetState("full");
-      else if (delta > DRAG_THRESHOLD) handleCloseSheet();
-    } else if (sheetState === "full" && delta > DRAG_THRESHOLD) setSheetState("half");
-  }, [sheetState, handleCloseSheet]);
 
   const searchRatingsRef = useRef(searchRatings);
   useEffect(() => { searchRatingsRef.current = searchRatings; }, [searchRatings]);
@@ -330,12 +640,8 @@ const RouteScreen: FC = () => {
     handleClear:   handleClearSearch,
   } = usePlaceSearch({ isServicesReady, onConfirm: onSearchConfirm, onFocusResult: onSearchFocus });
 
-  // 검색 결과가 바뀔 때마다 각 장소의 평점을 비동기로 fetch
-  // - localStorage("ta_${id}") 캐시 공유 (추천 경로·직접 입력과 동일 키)
-  // - 5개씩 순차 처리 → TripAdvisor rate limit(5 req/s) 방지
   useEffect(() => {
     if (searchResults.length === 0) { setSearchRatings({}); return; }
-
     const TA_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
     const readCache = (id: string): number | undefined => {
       try {
@@ -350,7 +656,6 @@ const RouteScreen: FC = () => {
       try {
         const raw = localStorage.getItem(`ta_${id}`);
         const prev = raw ? JSON.parse(raw) : null;
-        // 기존 캐시에 rating만 갱신하고 나머지 필드(reviews, webUrl 등) 유지
         const data = { ...(prev?.data ?? {}), rating };
         localStorage.setItem(`ta_${id}`, JSON.stringify({ data, ts: Date.now() }));
       } catch { }
@@ -358,8 +663,6 @@ const RouteScreen: FC = () => {
 
     let cancelled = false;
     const targets = searchResults.slice(0, 10);
-
-    // 먼저 캐시에서 읽어 즉시 반영
     const fromCache: Record<string, number> = {};
     targets.forEach(r => {
       const cached = readCache(r.id);
@@ -367,7 +670,6 @@ const RouteScreen: FC = () => {
     });
     if (Object.keys(fromCache).length > 0) setSearchRatings(fromCache);
 
-    // 캐시 미스 항목만 5개씩 순차 API 호출
     const needFetch = targets.filter(r => readCache(r.id) === undefined);
     if (needFetch.length === 0) return () => { cancelled = true; };
 
@@ -386,7 +688,6 @@ const RouteScreen: FC = () => {
         if (i + 5 < needFetch.length) await new Promise(res => setTimeout(res, 300));
       }
     })();
-
     return () => { cancelled = true; };
   }, [searchResults]);
 
@@ -398,219 +699,71 @@ const RouteScreen: FC = () => {
   const handleSetLoading   = (v: boolean) => setRouteState(prev => ({ ...prev, isLoading: v }));
   const handleSetError     = (m: string)  => setRouteState(prev => ({ ...prev, errorMsg: m }));
 
-  const sheetHeightVh = sheetState === "full" ? SHEET_HEIGHT_FULL : sheetState === "half" ? SHEET_HEIGHT_HALF : 0;
-
+ // ═══════════════════════════════════════════════════════════
+  // RENDER - Flexbox 기반의 좌우 분할 레이아웃
+  // ═══════════════════════════════════════════════════════════
   return (
-    <div style={{ position: "fixed", inset: 0, fontFamily: "'Noto Sans KR', sans-serif", background: "#000" }}>
-      <div ref={mapElRef} style={{ position: "absolute", inset: 0 }} />
-
-      {/* [NAV] 안내 중 상단 뱃지 */}
-      {isNavigating && navRoute && (
-        <div style={{
-          position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)",
-          zIndex: 920, background: COLOR_PRIMARY, color: "#fff",
-          borderRadius: 24, padding: "8px 18px",
-          display: "flex", alignItems: "center", gap: 8,
-          boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
-          fontFamily: "'Noto Sans KR', sans-serif",
-          cursor: "pointer",
-        }}
-          onClick={() => setSheetState(prev => prev === "hidden" ? "half" : "hidden")}
-        >
-          <span style={{ fontSize: 13 }}>🗺</span>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>{navRoute.label} 안내 중</span>
-          <span style={{ fontSize: 11, opacity: 0.85 }}>탭하여 상세보기</span>
-        </div>
-      )}
-
-      {/* [API] 재난 위험구역 지도 오버레이 */}
-      <DisasterZoneOverlay
-        activeAlerts={activeAlerts}
-        kakaoMapRef={kakaoMapRef}
-        isMapReady={isMapReady}
-      />
-
-      {/* [API] 재난 현황 플로팅 배지 */}
-      <DisasterStatusChip
-        activeAlerts={activeAlerts}
-        alertQueue={alertQueue}
-      />
-
-      {/* [API] 재난 알림 배너 */}
-      <DisasterAlertBanner
-        currentAlert={currentAlert}
-        alertQueue={alertQueue}
-        remainingSec={remainingSec}
-        onDismiss={dismissCurrent}
-        kakaoMapRef={kakaoMapRef}
-        isNavigating={isNavigating}
-        onSelectRoute={(isDetour) => {
-          // [TODO] 실제 경로 변경 로직 연결 (우회 경로 재탐색)
-          console.log(isDetour ? "우회 경로 적용" : "현재 경로 유지");
-        }}
-      />
-
-      {/* 검색창 + 드롭다운 래퍼 */}
-      <div style={{ position: "absolute", top: 16, left: 16, right: 16, zIndex: 30 }}>
-        <div style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 2px 16px rgba(0,0,0,0.12)", display: "flex", alignItems: "center", gap: 10, padding: "10px 14px" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLOR_TEXT_SUB} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-            <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="22" y2="22" />
-          </svg>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={e => { setSearchQuery(e.target.value); if (e.target.value) setConfirmedSearchPlace(null); }}
-            onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
-            onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-            placeholder="장소, 주소를 검색하세요"
-            style={{ flex: 1, border: "none", outline: "none", fontSize: 14, color: COLOR_TEXT_MAIN, background: "transparent", fontFamily: "'Noto Sans KR', sans-serif" }}
-          />
-          {searchQuery.length > 0 && (
-            <div onClick={() => { handleClearSearch(); setConfirmedSearchPlace(null); }} style={{ width: 20, height: 20, borderRadius: "50%", background: COLOR_INACTIVE, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 700 }}>✕</div>
-          )}
-          <div style={{ width: 1, height: 18, background: COLOR_BORDER, flexShrink: 0 }} />
-          <div onClick={() => googleUser ? handleGoogleLogout() : handleGoogleLogin()} style={{ width: 32, height: 32, borderRadius: "50%", background: googleUser ? COLOR_BG : "#fff", border: `1px solid ${COLOR_BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, overflow: "hidden" }}>
-            {googleUser ? <img src={googleUser.picture} alt={googleUser.name} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} /> : <IconGoogle />}
-          </div>
-          <div onClick={handleMoveToCurrentLoc} style={{ width: 32, height: 32, borderRadius: "50%", background: isLocating ? COLOR_BG : `${COLOR_USER_PIN}18`, border: `1px solid ${isLocating ? COLOR_BORDER : COLOR_USER_PIN}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: isLocating ? "default" : "pointer", flexShrink: 0 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isLocating ? COLOR_TEXT_SUB : COLOR_USER_PIN} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><circle cx="12" cy="12" r="8" strokeOpacity="0.25" />
-            </svg>
+    <div style={{ display: "flex", width: "100vw", height: "100vh", fontFamily: "'Noto Sans KR', sans-serif", background: "#000", overflow: "hidden" }}>
+      {/* 전역 keyframe — 조건부 컴포넌트에 묻히지 않도록 항상 렌더 */}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      
+      {/* ── [LEFT SIDEBAR] ─────────────────────────────── */}
+      {/* [수정됨] 사이드바 패널에 position: "relative"를 추가하여 모달의 기준점으로 만듦 */}
+      <div style={{ position: "relative", width: "420px", display: "flex", flexDirection: "column", background: COLOR_SURFACE, zIndex: 40, boxShadow: "4px 0 24px rgba(0,0,0,0.12)" }}>
+        
+        {/* ── 서비스 로고 영역 ── */}
+        <div style={{ padding: "24px 20px 8px", display: "flex", alignItems: "center", gap: 12 }}>
+          <img src="./Lin-K-transparent.png" alt="Logo" style={{ width: 42, height: 42, borderRadius: 12 }} />
+          {/* 서비스명 타이틀 (필요 없으면 삭제 가능) */}
+          <div style={{ fontSize: 22, fontWeight: 900, color: COLOR_TEXT_MAIN, letterSpacing: "-0.5px" }}>
+            Lin-K
           </div>
         </div>
 
-        {/* 장소 키워드 검색 결과 드롭다운 */}
-        {showDropdown && searchResults.length > 0 && (
-          <div style={{ marginTop: 6, background: "rgba(255,255,255,0.98)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 4px 20px rgba(0,0,0,0.14)", overflow: "hidden", maxHeight: 280, overflowY: "auto" }}>
-            {searchResults.map((result, i) => {
-              const isFocused = focusedSearchResult?.id === result.id;
-              return (
-                <div
-                  key={result.id}
-                  onMouseDown={e => { e.preventDefault(); handleSelectSearchResult(result); }}
-                  style={{
-                    padding: "10px 14px",
-                    borderBottom: i < searchResults.length - 1 ? `1px solid ${COLOR_BORDER}` : "none",
-                    cursor: "pointer",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 2,
-                    background: isFocused ? `${COLOR_PRIMARY}0d` : "transparent",
-                    boxShadow: isFocused ? `inset 0 0 0 2px ${COLOR_PRIMARY}` : "none",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: isFocused ? COLOR_PRIMARY : COLOR_TEXT_MAIN }}>{result.place_name}</span>
-                    {!!searchRatings[result.id] && (
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#f59a00", background: "#fff8ed", borderRadius: 6, padding: "1px 6px", border: "1px solid #f7d48a" }}>⭐ {searchRatings[result.id].toFixed(1)}</span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 11, color: COLOR_TEXT_SUB }}>{result.road_address_name || result.address_name}</div>
-                  {result.category_name && (
-                    <div style={{ fontSize: 11, color: COLOR_PRIMARY }}>{result.category_name.split(" > ").pop()}</div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* 장소 키워드 검색 결과 지도 오버레이 */}
-      {searchResults.length > 0
-        ? searchResults.map((result) => {
-            const place = { ...kakaoResultToPlace(result), rating: searchRatings[result.id] ?? 0 };
+        {/* 메뉴 탭 (주변 탐색 / 경로 탐색) */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${COLOR_BORDER}`, padding: "0 20px" }}>
+          {MENU_ITEM_LIST.map(item => {
+            const isActive = activeTab === item.id;
             return (
-              <PlaceMarker
-                key={result.id}
-                place={place}
-                isSelected={focusedSearchResult?.id === result.id}
-                isActive={true}
-                isDeemphasized={focusedSearchResult?.id !== result.id}
-                kakaoMapRef={kakaoMapRef}
-                onSelectPlace={handleSelectPlace}
-              />
+              <button
+                key={item.id}
+                onClick={() => handleMenuSelect(item.id)}
+                style={{
+                  flex: 1, padding: "14px 0", border: "none", background: "transparent",
+                  borderBottom: isActive ? `3px solid ${COLOR_PRIMARY}` : `3px solid transparent`,
+                  color: isActive ? COLOR_PRIMARY : COLOR_TEXT_SUB,
+                  fontWeight: isActive ? 800 : 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s"
+                }}
+              >
+                <item.Icon color={isActive ? COLOR_PRIMARY : COLOR_TEXT_SUB} />
+                <span style={{ fontSize: 14, fontFamily: "'Noto Sans KR', sans-serif" }}>{item.label}</span>
+              </button>
             );
-          })
-        : confirmedSearchPlace && (
-            <PlaceMarker
-              key={confirmedSearchPlace.id}
-              place={confirmedSearchPlace}
-              isSelected={true}
-              isActive={true}
-              isDeemphasized={false}
-              kakaoMapRef={kakaoMapRef}
-              onSelectPlace={() => setConfirmedSearchPlace(null)}
-            />
-          )
-      }
-
-      {/* 지도 오버레이 */}
-      {activeTab === "nearby" && (
-        <NearbyMap
-          userLat={userLat} userLng={userLng} isLocating={isLocating} locLabel={locLabel}
-          radiusMeter={radiusConfig.meter} selectedPlace={selectedPlace} onSelectPlace={handleSelectPlace}
-          selectedRadiusIdx={selectedRadiusIdx} onSelectRadius={handleSelectRadius}
-          kakaoMapRef={kakaoMapRef} isMapReady={isMapReady} placeList={kakaoPlaceList}
-        />
-      )}
-
-      {sheetState !== "hidden" && (
-        <div onClick={handleCloseSheet} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.08)", pointerEvents: "auto" }} />
-      )}
-
-      {/* FAB */}
-      <div style={{ position: "absolute", bottom: 32, right: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12, zIndex: 50 }}>
-        {MENU_ITEM_LIST.map((item, i) => (
-          <div key={item.id} onClick={() => handleMenuSelect(item.id)} style={{ display: "flex", alignItems: "center", gap: 10, opacity: isMenuOpen ? 1 : 0, transform: isMenuOpen ? "translateY(0) scale(1)" : "translateY(16px) scale(0.85)", transition: `opacity 0.22s ease ${i * 0.06}s, transform 0.22s ease ${i * 0.06}s`, pointerEvents: isMenuOpen ? "auto" : "none", cursor: "pointer" }}>
-            <div style={{ background: "rgba(255,255,255,0.97)", backdropFilter: "blur(8px)", borderRadius: 10, padding: "6px 12px", fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN, boxShadow: "0 2px 12px rgba(0,0,0,0.12)", whiteSpace: "nowrap" }}>{item.label}</div>
-            <div style={{ width: 46, height: 46, borderRadius: "50%", background: COLOR_PRIMARY, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 14px rgba(0,0,0,0.18)", flexShrink: 0 }}><item.Icon /></div>
-          </div>
-        ))}
-        <div onClick={() => setIsMenuOpen(prev => !prev)} style={{ width: 56, height: 56, borderRadius: "50%", background: COLOR_PRIMARY, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 20px rgba(245,154,0,0.45)", cursor: "pointer", transition: "transform 0.25s ease", transform: isMenuOpen ? "rotate(45deg)" : "rotate(0deg)", zIndex: 51 }}>
-          <span style={{ fontSize: 26, color: "#fff", lineHeight: 1, fontWeight: 300 }}>+</span>
-        </div>
-      </div>
-
-      {/* 바텀 시트 */}
-      <div ref={sheetElRef} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: `${sheetHeightVh}vh`, background: COLOR_SURFACE, borderRadius: "20px 20px 0 0", boxShadow: "0 -4px 32px rgba(0,0,0,0.14)", transition: isDraggingRef.current ? "none" : "height 0.32s cubic-bezier(0.32,0.72,0,1)", zIndex: 40, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-
-        <div onTouchStart={e => handleDragStart(e.touches[0].clientY)} onTouchEnd={e => handleDragEnd(e.changedTouches[0].clientY)} onMouseDown={e => handleDragStart(e.clientY)} onMouseUp={e => handleDragEnd(e.clientY)} style={{ padding: "12px 0 8px", flexShrink: 0, cursor: "grab", userSelect: "none" }}>
-          <div style={{ width: 36, height: 4, borderRadius: 2, background: COLOR_BORDER, margin: "0 auto" }} />
+          })}
         </div>
 
-        {activeTab && (
-          <div style={{ padding: "4px 20px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, borderBottom: `1px solid ${COLOR_BORDER}` }}>
-            <div>
-              <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, letterSpacing: 2, fontWeight: 600 }}>{TAB_HEADER[activeTab]?.sub}</div>
-              <div style={{ fontSize: 17, fontWeight: 900, color: COLOR_TEXT_MAIN, marginTop: 2 }}>{TAB_HEADER[activeTab]?.main}</div>
-            </div>
-            <div onClick={handleCloseSheet} style={{ width: 32, height: 32, borderRadius: "50%", background: COLOR_BG, border: `1px solid ${COLOR_BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16, color: COLOR_TEXT_SUB }}>✕</div>
-          </div>
-        )}
-
-        <div style={{ flex: 1, overflowY: "auto" }}>
-
+        {/* 탭 별 메인 콘텐츠 영역 */}
+        <div style={{ flex: 1, overflowY: "auto", position: "relative" }}>
+          
           {/* 주변 탐색 */}
           {activeTab === "nearby" && (
-            <div style={{ padding: "12px 16px 24px" }}>
-              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+            <div style={{ padding: "20px" }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
                 {RADIUS_OPTION_LIST.map((opt, i) => (
-                  <button key={opt.label} onClick={() => handleSelectRadius(i)} style={{ flex: 1, padding: "7px 0", borderRadius: 10, border: `1.5px solid ${selectedRadiusIdx === i ? COLOR_PRIMARY : COLOR_BORDER}`, background: selectedRadiusIdx === i ? COLOR_PRIMARY : COLOR_SURFACE, color: selectedRadiusIdx === i ? "#fff" : COLOR_TEXT_SUB, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s" }}>
+                  <button key={opt.label} onClick={() => handleSelectRadius(i)} style={{ flex: 1, padding: "8px 0", borderRadius: 10, border: `1.5px solid ${selectedRadiusIdx === i ? COLOR_PRIMARY : COLOR_BORDER}`, background: selectedRadiusIdx === i ? COLOR_PRIMARY : COLOR_SURFACE, color: selectedRadiusIdx === i ? "#fff" : COLOR_TEXT_SUB, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s" }}>
                     {opt.label}
                     <div style={{ fontSize: 10, fontWeight: 400, marginTop: 1, opacity: 0.8 }}>{opt.meter >= 1000 ? `${opt.meter / 1000}km` : `${opt.meter}m`}</div>
                   </button>
                 ))}
               </div>
               {kakaoIsLoading && (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "32px 0", color: COLOR_TEXT_SUB }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "40px 0", color: COLOR_TEXT_SUB }}>
                   <div style={{ width: 28, height: 28, border: `3px solid ${COLOR_PRIMARY}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
                   <span style={{ fontSize: 13 }}>주변 장소를 불러오는 중...</span>
-                  <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
                 </div>
               )}
               {!kakaoIsLoading && kakaoError && (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "32px 0" }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "40px 0" }}>
                   <span style={{ fontSize: 28 }}>⚠️</span>
                   <span style={{ fontSize: 13, color: "#e53e3e", textAlign: "center" }}>{kakaoError}</span>
                   <button onClick={kakaoRefetch} style={{ padding: "8px 18px", borderRadius: 10, border: `1.5px solid ${COLOR_PRIMARY}`, background: "transparent", color: COLOR_PRIMARY, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}>다시 시도</button>
@@ -618,14 +771,14 @@ const RouteScreen: FC = () => {
               )}
               {!kakaoIsLoading && !kakaoError && (
                 <>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_SUB, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_SUB, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
                     <span>주변 장소 <span style={{ color: COLOR_PRIMARY }}>{kakaoPlaceList.length}</span></span>
                     <span style={{ fontWeight: 400, fontSize: 11 }}>거리순</span>
-                    <button onClick={kakaoRefetch} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: COLOR_TEXT_SUB, padding: 0 }}>🔄</button>
+                    <button onClick={kakaoRefetch} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 16, padding: 0 }}>🔄</button>
                   </div>
                   {kakaoPlaceList.length === 0
-                    ? <div style={{ textAlign: "center", color: COLOR_INACTIVE, fontSize: 13, padding: 32 }}>반경 내 장소가 없어요</div>
-                    : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    ? <div style={{ textAlign: "center", color: COLOR_INACTIVE, fontSize: 13, padding: 40 }}>반경 내 장소가 없어요</div>
+                    : <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                         {kakaoPlaceList.map(place => (
                           <PlaceCard key={place.id} place={place} isSelected={selectedPlace?.id === place.id} onSelect={handleSelectPlace} />
                         ))}
@@ -636,7 +789,7 @@ const RouteScreen: FC = () => {
             </div>
           )}
 
-          {/* [CHANGED] 경로 탐색 탭 — 추천 경로 + 직접 입력 통합 */}
+          {/* 경로 탐색 */}
           {activeTab === "route" && (
             <RoutePanel
               routeState={routeState}
@@ -654,9 +807,136 @@ const RouteScreen: FC = () => {
               onStartNavigation={handleStartNavigation}
               onCancelNavigation={handleCancelNavigation}
               isServicesReady={isServicesReady}
+              disasterZones={detourDisasterZones}
             />
           )}
         </div>
+
+        {/* ── [CHANGED] MODAL (우측 맵 영역에서 좌측 사이드바 영역 최하단으로 이동) ── */}
+        {showDisasterModal && pendingNavRoute && pendingNavAlerts.length > 0 && (
+          <DisasterRouteChoiceModal
+            route={pendingNavRoute}
+            alerts={pendingNavAlerts}
+            detourRoutes={pendingNavCtx?.type === 'manual' ? detourManualRoutes : recRoutes}
+            detourLoading={pendingNavCtx?.type === 'manual' ? detourManualLoading : recIsLoading}
+            onKeep={handleConfirmNavigation}
+            onDetour={handleDetourSearch}
+            onSelectDetour={handleSelectDetour}
+            onPreviewDetour={handlePreviewDetour}
+            onClose={() => {
+              handlePreviewDetour(null);
+              setShowDisasterModal(false);
+              setPendingNavRoute(null);
+              setPendingNavAlerts([]);
+              setPendingNavCtx(null);
+              setDetourDisasterZones([]);
+              setDetourManualRoutes([]);
+            }}
+          />
+        )}
+      </div>
+
+      {/* ── [RIGHT MAP AREA] ───────────────────────────── */}
+      <div style={{ flex: 1, position: "relative" }}>
+        
+        {/* 실제 지도 컨테이너 */}
+        <div ref={mapElRef} style={{ position: "absolute", inset: 0 }} />
+
+        {/* ── 검색창 / 현위치 / 로그인 ── */}
+        <div style={{ position: "absolute", top: 16, left: 16, right: 16, zIndex: 50 }}>
+          <div style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 2px 16px rgba(0,0,0,0.12)", display: "flex", alignItems: "center", gap: 10, padding: "10px 14px" }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLOR_TEXT_SUB} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="22" y2="22" />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => { setSearchQuery(e.target.value); if (e.target.value) setConfirmedSearchPlace(null); }}
+              onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+              placeholder="장소, 주소를 검색하세요"
+              style={{ flex: 1, border: "none", outline: "none", fontSize: 14, color: COLOR_TEXT_MAIN, background: "transparent", fontFamily: "'Noto Sans KR', sans-serif" }}
+            />
+            {searchQuery.length > 0 && (
+              <div onClick={() => { handleClearSearch(); setConfirmedSearchPlace(null); }} style={{ width: 20, height: 20, borderRadius: "50%", background: COLOR_INACTIVE, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 11, color: "#fff", fontWeight: 700 }}>✕</div>
+            )}
+            <div style={{ width: 1, height: 18, background: COLOR_BORDER, flexShrink: 0 }} />
+            <div onClick={() => googleUser ? handleGoogleLogout() : handleGoogleLogin()} style={{ width: 32, height: 32, borderRadius: "50%", background: googleUser ? COLOR_BG : "#fff", border: `1px solid ${COLOR_BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, overflow: "hidden" }}>
+              {googleUser ? <img src={googleUser.picture} alt={googleUser.name} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} /> : <IconGoogle />}
+            </div>
+            <div onClick={handleMoveToCurrentLoc} style={{ width: 32, height: 32, borderRadius: "50%", background: isLocating ? COLOR_BG : `${COLOR_USER_PIN}18`, border: `1px solid ${isLocating ? COLOR_BORDER : COLOR_USER_PIN}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: isLocating ? "default" : "pointer", flexShrink: 0 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isLocating ? COLOR_TEXT_SUB : COLOR_USER_PIN} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><circle cx="12" cy="12" r="8" strokeOpacity="0.25" />
+              </svg>
+            </div>
+          </div>
+
+          {/* 장소 키워드 검색 결과 드롭다운 */}
+          {showDropdown && searchResults.length > 0 && (
+            <div style={{ marginTop: 6, background: "rgba(255,255,255,0.98)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 4px 20px rgba(0,0,0,0.14)", overflow: "hidden", maxHeight: 280, overflowY: "auto" }}>
+              {searchResults.map((result, i) => {
+                const isFocused = focusedSearchResult?.id === result.id;
+                return (
+                  <div key={result.id} onMouseDown={e => { e.preventDefault(); handleSelectSearchResult(result); }} style={{ padding: "10px 14px", borderBottom: i < searchResults.length - 1 ? `1px solid ${COLOR_BORDER}` : "none", cursor: "pointer", display: "flex", flexDirection: "column", gap: 2, background: isFocused ? `${COLOR_PRIMARY}0d` : "transparent", boxShadow: isFocused ? `inset 0 0 0 2px ${COLOR_PRIMARY}` : "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: isFocused ? COLOR_PRIMARY : COLOR_TEXT_MAIN }}>{result.place_name}</span>
+                      {!!searchRatings[result.id] && <span style={{ fontSize: 11, fontWeight: 700, color: "#f59a00", background: "#fff8ed", borderRadius: 6, padding: "1px 6px", border: "1px solid #f7d48a" }}>⭐ {searchRatings[result.id].toFixed(1)}</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: COLOR_TEXT_SUB }}>{result.road_address_name || result.address_name}</div>
+                    {result.category_name && <div style={{ fontSize: 11, color: COLOR_PRIMARY }}>{result.category_name.split(" > ").pop()}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* 안내 중 상단 뱃지 */}
+        {isNavigating && navRoute && (
+          <div style={{ position: "absolute", top: 80, left: "50%", transform: "translateX(-50%)", zIndex: 30, background: COLOR_PRIMARY, color: "#fff", borderRadius: 24, padding: "10px 24px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.18)", fontFamily: "'Noto Sans KR', sans-serif" }}>
+            <span style={{ fontSize: 16 }}>🗺</span>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>{navRoute.label} 안내 중</span>
+          </div>
+        )}
+
+        {/* 장소 키워드 검색 결과 마커 오버레이 */}
+        {searchResults.length > 0
+          ? searchResults.map((result) => {
+              const place = { ...kakaoResultToPlace(result), rating: searchRatings[result.id] ?? 0 };
+              return (
+                <PlaceMarker
+                  key={result.id} place={place}
+                  isSelected={focusedSearchResult?.id === result.id}
+                  isActive={true} isDeemphasized={focusedSearchResult?.id !== result.id}
+                  kakaoMapRef={kakaoMapRef} onSelectPlace={handleSelectPlace}
+                />
+              );
+            })
+          : confirmedSearchPlace && (
+              <PlaceMarker
+                key={confirmedSearchPlace.id} place={confirmedSearchPlace}
+                isSelected={true} isActive={true} isDeemphasized={false}
+                kakaoMapRef={kakaoMapRef} onSelectPlace={() => setConfirmedSearchPlace(null)}
+              />
+            )
+        }
+
+        {/* 주변 탐색 마커 (NearbyMap) */}
+        {activeTab === "nearby" && (
+          <NearbyMap
+            userLat={userLat} userLng={userLng} isLocating={isLocating} locLabel={locLabel}
+            radiusMeter={radiusConfig.meter} selectedPlace={selectedPlace} onSelectPlace={handleSelectPlace}
+            selectedRadiusIdx={selectedRadiusIdx} onSelectRadius={handleSelectRadius}
+            kakaoMapRef={kakaoMapRef} isMapReady={isMapReady} placeList={kakaoPlaceList}
+          />
+        )}
+
+        {/* 재난 시스템 오버레이 및 배너 */}
+        <DisasterZoneOverlay activeAlerts={activeAlerts} kakaoMapRef={kakaoMapRef} isMapReady={isMapReady} />
+        <DisasterStatusChip activeAlerts={activeAlerts} alertQueue={alertQueue} />
+        <DisasterAlertBanner currentAlert={currentAlert} alertQueue={alertQueue} remainingSec={remainingSec} onDismiss={dismissCurrent} kakaoMapRef={kakaoMapRef} />
+        
+        {/* 모달은 여기서 완전히 제거되었습니다! */}
       </div>
     </div>
   );

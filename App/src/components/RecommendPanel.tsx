@@ -24,12 +24,13 @@ import { formatDistance, formatDuration } from "../utils/Utils";
 // ── [CONFIG] ──────────────────────────────────────────────
 
 const CATEGORY_ICON: Record<Category, string> = {
-  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍",
+  카페: "☕", 갤러리: "🖼", 공원: "🌿", 명소: "📸", 문화: "🎨", 거리: "🛍", 식당: "🍽️"
 };
 
 const COLOR_CATEGORY: Record<Category, string> = {
   카페: "#b45309", 갤러리: "#7c3aed", 공원: "#16a34a",
   명소: "#1d4ed8",  문화: "#0e7490",  거리: "#be185d",
+  식당: "#d97706",
 };
 
 // ── [API] 추천 경유지 포함 실제 경로 조회 ─────────────────

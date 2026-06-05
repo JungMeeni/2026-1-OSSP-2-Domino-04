@@ -217,10 +217,13 @@ const fetchDirections = async (
 
 // ── [HOOK] ────────────────────────────────────────────────
 
+export type DisasterZoneInfo = { lat: number; lng: number; radius_m: number };
+
 interface UseRecommendedRouteOptions {
   userLat: number;
   userLng: number;
   enabled: boolean;
+  disasterZones?: DisasterZoneInfo[];
 }
 
 interface UseRecommendedRouteResult {
@@ -231,7 +234,7 @@ interface UseRecommendedRouteResult {
 }
 
 export const useRecommendedRoute = ({
-  userLat, userLng, enabled,
+  userLat, userLng, enabled, disasterZones,
 }: UseRecommendedRouteOptions): UseRecommendedRouteResult => {
   const [routes,    setRoutes]    = useState<RecommendedRoute[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -244,16 +247,19 @@ export const useRecommendedRoute = ({
     if (!window.kakao?.maps?.services) { setError("카카오맵 서비스가 준비되지 않았습니다"); return; }
 
     const cacheKey = `rec_routes_${userLat.toFixed(4)}_${userLng.toFixed(4)}`;
-    const cached   = sessionStorage.getItem(cacheKey);
-    if (cached) {
-      try {
-        const parsed: RecommendedRoute[] = JSON.parse(cached);
-        if (parsed.length > 0 && parsed.every(r => r.roads?.length > 0)) {
-          setRoutes(parsed);
-          return;
-        }
-      } catch { }
-      sessionStorage.removeItem(cacheKey);
+    // 재난구역 우회 탐색 시에는 캐시를 사용하지 않음
+    if (!disasterZones?.length) {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        try {
+          const parsed: RecommendedRoute[] = JSON.parse(cached);
+          if (parsed.length > 0 && parsed.every(r => r.roads?.length > 0)) {
+            setRoutes(parsed);
+            return;
+          }
+        } catch { }
+        sessionStorage.removeItem(cacheKey);
+      }
     }
 
     cancelledRef.current = false;
@@ -301,6 +307,8 @@ export const useRecommendedRoute = ({
         byCat.set(raw.category, arr);
       }
       const candidates = [...byCat.values()].flatMap(arr => arr.slice(0, PER_CAT));
+      // PER_CAT 초과분 — 재난구역 제거 보완용 예비 장소 (TA 평점 조회 없이 전송)
+      const reserveItems = [...byCat.values()].flatMap(arr => arr.slice(PER_CAT));
 
       // TripAdvisor 평점 — 캐시 히트 시 건너뜀 (429 rate limit 방지)
       const cachedMap = new Map<string, TaDetail | null>();
@@ -366,13 +374,35 @@ export const useRecommendedRoute = ({
         };
       });
 
+      // 예비 장소 입력 조립 (TA 평점 미조회 — 재난구역 제거 시 백엔드 보충용)
+      const extraPlaceInputs: BackendPlaceInput[] = reserveItems.map(({ item, category }) => ({
+        id:          item.id,
+        name:        item.place_name,
+        category,
+        lat:         parseFloat(item.y),
+        lng:         parseFloat(item.x),
+        distance:    parseInt(item.distance, 10),
+        address:     item.address_name,
+        rating:      0,
+        num_reviews: 0,
+        web_url:     "",
+      }));
+
       // ── 백엔드 ML 모델 추천 호출 (MLP 채점 + Held-Karp+2-opt 순서 최적화)
       let backendRoutes: BackendRouteCandidate[] = [];
       try {
         const res = await fetch(backendUrl("/route/recommend"), {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ user_lat: userLat, user_lng: userLng, places: placeInputs }),
+          body:    JSON.stringify({
+            user_lat: userLat,
+            user_lng: userLng,
+            places:   placeInputs,
+            ...(disasterZones?.length ? {
+              disaster_zones: disasterZones,
+              extra_places:   extraPlaceInputs,
+            } : {}),
+          }),
         });
         if (!res.ok) throw new Error(`${res.status}`);
         const data: { routes: BackendRouteCandidate[] } = await res.json();
@@ -440,7 +470,9 @@ export const useRecommendedRoute = ({
     };
 
     return () => { cancelledRef.current = true; };
-  }, [userLat, userLng, enabled, fetchKey]);
+  // disasterZones 변경(우회 탐색) 시 재실행 — 객체 참조 대신 JSON 문자열 비교
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userLat, userLng, enabled, fetchKey, JSON.stringify(disasterZones ?? [])]);
 
   const refetch = useCallback(() => {
     const cacheKey = `rec_routes_${userLat.toFixed(4)}_${userLng.toFixed(4)}`;

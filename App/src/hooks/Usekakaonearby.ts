@@ -24,7 +24,16 @@ const KAKAO_CATEGORY_LIST: { code: string; category: Category }[] = [
   { code: "AT4", category: "명소" },   // 관광명소
   { code: "CT1", category: "문화" },   // 문화시설
   { code: "CE7", category: "카페" },   // 카페
+  { code: "FD6", category: "식당" },   // 음식점
+  { code: "PK6", category: "공원" },   // 공원
 ];
+
+// 반경별 최대 조회 개수: 가까운 곳 10개 / 기본 20개 / 넓은 곳 30개
+const getMaxCount = (radiusMeter: number): number => {
+  if (radiusMeter <= 250) return 10;
+  if (radiusMeter <= 500) return 20;
+  return 30;
+};
 
 // ── [TYPES] ───────────────────────────────────────────────
 
@@ -208,9 +217,23 @@ export const useKakaoNearby = ({
     const enrichWithTripadvisor = async (
       items: { item: KakaoPlaceItem; category: Category }[],
     ) => {
-      // 거리순 정렬 후 최대 15개 (API 호출 수 제한)
-      items.sort((a, b) => parseInt(a.item.distance) - parseInt(b.item.distance));
-      const top = items.slice(0, 15);
+      const maxCount = getMaxCount(radiusMeter);
+      // 카테고리별 균등 분배 후 거리순 재정렬 → maxCount개 선택
+      // (카페 등 특정 카테고리가 결과를 독점하지 않도록)
+      const perCat = Math.ceil(maxCount / KAKAO_CATEGORY_LIST.length);
+      const byCat  = new Map<Category, typeof items>();
+      for (const raw of items) {
+        const arr = byCat.get(raw.category) ?? [];
+        arr.push(raw);
+        byCat.set(raw.category, arr);
+      }
+      const balanced: typeof items = [];
+      for (const arr of byCat.values()) {
+        arr.sort((a, b) => parseInt(a.item.distance) - parseInt(b.item.distance));
+        balanced.push(...arr.slice(0, perCat));
+      }
+      balanced.sort((a, b) => parseInt(a.item.distance) - parseInt(b.item.distance));
+      const top = balanced.slice(0, maxCount);
 
       // location_id 배치 조회 (5개씩, 300ms 간격 — rate limit 방지)
       const idResults: (string | null)[] = [];
