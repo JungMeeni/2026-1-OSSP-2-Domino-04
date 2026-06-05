@@ -54,7 +54,7 @@ const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClo
     style={{
       position: "fixed", inset: 0,
       background: "rgba(0,0,0,0.35)",
-      zIndex: 960,
+      zIndex: 1000,
       display: "flex", alignItems: "flex-end",
     }}
   >
@@ -176,7 +176,7 @@ const DisasterStatusChip: FC<DisasterStatusChipProps> = ({ activeAlerts, alertQu
           position:   "fixed",
           top:        80,     // [CONFIG] 검색창 아래
           right:      16,
-          zIndex:     910,
+          zIndex:     990,
           background: COLOR_SURFACE,
           borderRadius: 12,
           border:     `1.5px solid ${color.border}`,

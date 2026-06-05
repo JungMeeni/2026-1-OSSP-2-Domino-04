@@ -15,8 +15,8 @@
 import { useState, useRef, useEffect, useCallback, type FC } from "react";
 import { useGoogleLogin } from "@react-oauth/google";
 import type {
-  Tab, Place, UserLocation,
-  RoutePoint, RouteState, RouteResult, Category,
+  Tab, Place, UserLocation, Category,
+  RoutePoint, RouteState, RouteResult,
 } from "../types/type";
 import type {
   KakaoLatLng, KakaoLatLngBounds, KakaoMapInstance,
@@ -164,6 +164,34 @@ const routePassesThroughAlert = (route: RecommendedRoute, alert: DisasterAlert):
   return false;
 };
 
+const _isPointInAlert = (lat: number, lng: number, alert: DisasterAlert): boolean => {
+  if (!alert.lat || !alert.lng) return false;
+  return _haversineM(lat, lng, alert.lat, alert.lng) < (alert.radiusM ?? 2000);
+};
+
+// 출발지 근방 꼭짓점을 제외하고 경로 본체가 재난구역을 통과하는지 확인
+const routeBodyPassesThroughAlert = (
+  route: RecommendedRoute,
+  alert: DisasterAlert,
+  originLat: number,
+  originLng: number,
+): boolean => {
+  if (!alert.lat || !alert.lng) return false;
+  const radius = alert.radiusM ?? 2000;
+  for (const place of route.places) {
+    if (_haversineM(place.lat, place.lng, alert.lat, alert.lng) < radius) return true;
+  }
+  for (const road of route.roads) {
+    for (let i = 0; i < road.vertexes.length - 1; i += 2) {
+      const vLat = road.vertexes[i + 1];
+      const vLng = road.vertexes[i];
+      if (_haversineM(vLat, vLng, originLat, originLng) < radius) continue;
+      if (_haversineM(vLat, vLng, alert.lat, alert.lng) < radius) return true;
+    }
+  }
+  return false;
+};
+
 const _MODAL_CLR: Record<string, { main: string; light: string; border: string }> = {
   호우:     { main: "#2563EB", light: "#EFF6FF", border: "#BFDBFE" },
   교통통제: { main: "#F5A623", light: "#FFFBEB", border: "#FDD99A" },
@@ -185,17 +213,62 @@ const _fmtDistDiff = (meter: number) => {
 const ROUTE_COLOR_ORIG   = "#f97316"; 
 const ROUTE_COLOR_DETOUR = "#16a34a"; 
 
+const DestinationWarningModal: FC<{
+  alerts:    DisasterAlert[];
+  onConfirm: () => void;
+  onCancel:  () => void;
+}> = ({ alerts, onConfirm, onCancel }) => {
+  const primary = alerts[0];
+  const c = _MODAL_CLR[primary?.dstSeNm ?? '긴급재난'] ?? _MODAL_CLR['긴급재난'];
+  return (
+    <div onClick={onCancel} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 960, display: "flex", alignItems: "flex-end", justifyContent: "center", padding: "24px", fontFamily: "'Noto Sans KR', sans-serif" }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: "100%", background: COLOR_SURFACE, borderRadius: "24px", borderTop: `4px solid ${c.border}`, boxShadow: "0 12px 36px rgba(0,0,0,0.25)", padding: "24px 20px 28px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ width: 36, height: 4, background: COLOR_BORDER, borderRadius: 2, margin: "0 auto" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 26 }}>⚠️</span>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: COLOR_TEXT_MAIN }}>도착지 재난구역 경고</div>
+            <div style={{ fontSize: 12, color: COLOR_TEXT_SUB, marginTop: 2 }}>선택한 도착지가 재난 구역에 포함됩니다</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {alerts.map(alert => {
+            const ac = _MODAL_CLR[alert.dstSeNm] ?? _MODAL_CLR['긴급재난'];
+            return (
+              <div key={alert.id} style={{ background: ac.light, borderRadius: 10, padding: "10px 14px", border: `1px solid ${ac.border}`, fontSize: 12, color: COLOR_TEXT_MAIN, lineHeight: 1.65 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                  <span style={{ background: ac.main, color: "#fff", fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10 }}>{_MODAL_ICON[alert.dstSeNm]} {alert.dstSeNm}</span>
+                  <span style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{alert.rcptnRgnNm} · {alert.crtDt}</span>
+                </div>
+                {alert.summary}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 13, color: COLOR_TEXT_MAIN, lineHeight: 1.65, background: "#fff7ed", borderRadius: 10, padding: "10px 14px", border: "1px solid #fed7aa" }}>
+          도착지가 재난 구역 안에 있습니다. 이동 전 현장 안전 여부를 꼭 확인하세요. 그래도 이동하시겠습니까?
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onCancel} style={{ flex: 1, padding: "13px 0", borderRadius: 12, border: `1.5px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, color: COLOR_TEXT_SUB, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}>취소</button>
+          <button onClick={onConfirm} style={{ flex: 1, padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_DANGER, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}>그래도 이동</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const DisasterRouteChoiceModal: FC<{
   route:          RecommendedRoute;
   alerts:         DisasterAlert[];
   detourRoutes:   RecommendedRoute[];
   detourLoading:  boolean;
+  destInZone:     boolean;
   onKeep:         () => void;
   onDetour:       () => void;
   onSelectDetour: (r: RecommendedRoute) => void;
-  onPreviewDetour:(d: RecommendedRoute | null) => void; 
+  onPreviewDetour:(d: RecommendedRoute | null) => void;
   onClose:        () => void;
-}> = ({ route, alerts, detourRoutes, detourLoading, onKeep, onDetour, onSelectDetour, onPreviewDetour, onClose }) => {
+}> = ({ route, alerts, detourRoutes, detourLoading, destInZone, onKeep, onDetour, onSelectDetour, onPreviewDetour, onClose }) => {
   const [comparing,     setComparing]     = useState(false);
   const [selectedDetour, setSelectedDetour] = useState<RecommendedRoute | null>(null);
 
@@ -263,6 +336,15 @@ const DisasterRouteChoiceModal: FC<{
                   })}
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN, marginBottom: 10 }}>선택한 경로가 {alerts.length}개의 재난 구역을 통과합니다</div>
+                {destInZone && (
+                  <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{ fontSize: 15, flexShrink: 0 }}>⚠️</span>
+                    <div style={{ fontSize: 12, color: "#92400e", lineHeight: 1.6 }}>
+                      <strong>도착지가 재난 구역에 포함됩니다.</strong><br />
+                      우회 경로를 선택해도 목적지 자체가 재난 구역 안에 있으니 주의하세요.
+                    </div>
+                  </div>
+                )}
                 <div style={{ background: COLOR_BG, borderRadius: 10, padding: "10px 14px", marginBottom: 16, border: `1px solid ${COLOR_BORDER}`, display: "flex", gap: 12, alignItems: "center" }}>
                   <span style={{ fontSize: 20 }}>{route.emoji}</span>
                   <div>
@@ -402,8 +484,9 @@ const DisasterRouteChoiceModal: FC<{
 const RouteScreen: FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>("nearby");
 
-  const [isNavigating,  setIsNavigating]  = useState<boolean>(false);
-  const [navRoute,      setNavRoute]      = useState<RecommendedRoute | null>(null);
+  const [isNavigating,    setIsNavigating]    = useState<boolean>(false);
+  const [navRoute,        setNavRoute]        = useState<RecommendedRoute | null>(null);
+  const [navIsRecommend,  setNavIsRecommend]  = useState<boolean>(false);
 
   const [pendingNavRoute,      setPendingNavRoute]      = useState<RecommendedRoute | null>(null);
   const [pendingNavAlerts,     setPendingNavAlerts]     = useState<DisasterAlert[]>([]);
@@ -413,6 +496,9 @@ const RouteScreen: FC = () => {
 
   const [detourManualRoutes,   setDetourManualRoutes]   = useState<RecommendedRoute[]>([]);
   const [detourManualLoading,  setDetourManualLoading]  = useState<boolean>(false);
+  const [showDestWarning,      setShowDestWarning]      = useState<boolean>(false);
+  const [detourDestInZone,     setDetourDestInZone]     = useState<boolean>(false);
+  const [detourCategoryBias,   setDetourCategoryBias]   = useState<Partial<Record<string, number>> | undefined>();
   const [googleUser, setGoogleUser] = useState<GoogleUserProfile | null>(null);
 
   const [selectedRadiusIdx,    setSelectedRadiusIdx]    = useState<number>(1);
@@ -440,7 +526,7 @@ const RouteScreen: FC = () => {
     useKakaoNearby({ userLat, userLng, radiusMeter: radiusConfig.meter, enabled: activeTab === "nearby" && !isLocating && isServicesReady });
 
   const { routes: recRoutes, isLoading: recIsLoading, error: recError, refetch: recRefetch } =
-    useRecommendedRoute({ userLat, userLng, enabled: activeTab === "route" && !isLocating && isServicesReady, disasterZones: detourDisasterZones });
+    useRecommendedRoute({ userLat, userLng, enabled: activeTab === "route" && !isLocating && isServicesReady, disasterZones: detourDisasterZones, categoryBias: detourCategoryBias });
 
   const { currentAlert, alertQueue, remainingSec, dismissCurrent } = useDisasterAlert(true);
   const activeAlerts = alertQueue;
@@ -543,41 +629,102 @@ const RouteScreen: FC = () => {
   }, [activeTab, clearMapLayers]);
 
   const handleStartNavigation = useCallback((route: RecommendedRoute, ctx: NavRouteCtx) => {
+    const originLat = ctx.type === 'manual' ? ctx.origin.lat : userLat;
+    const originLng = ctx.type === 'manual' ? ctx.origin.lng : userLng;
+    const lastPlace = route.places[route.places.length - 1];
+    const destLat   = ctx.type === 'manual' ? ctx.dest.lat : (lastPlace?.lat ?? userLat);
+    const destLng   = ctx.type === 'manual' ? ctx.dest.lng : (lastPlace?.lng ?? userLng);
+
     const affected = activeAlerts.filter(a => routePassesThroughAlert(route, a));
     if (affected.length > 0) {
+      const bodyAffected = affected.filter(a =>
+        routeBodyPassesThroughAlert(route, a, originLat, originLng)
+      );
+      const destAffected = affected.filter(a => _isPointInAlert(destLat, destLng, a));
+
+      if (bodyAffected.length === 0) {
+        // 출발지만 재난구역에 포함된 경우
+        if (destAffected.length > 0) {
+          // 도착지도 재난구역 → 경고 모달
+          setPendingNavRoute(route);
+          setPendingNavAlerts(destAffected);
+          setPendingNavCtx(ctx);
+          setShowDestWarning(true);
+        } else {
+          // 출발지만 재난구역 → 우회 없이 바로 안내
+          setNavRoute(route);
+          setIsNavigating(true);
+          setNavIsRecommend(ctx.type === 'recommend');
+        }
+        return;
+      }
+
+      // 경로 본체가 재난구역 통과
+      const isDestInZone = destAffected.length > 0;
       setPendingNavRoute(route);
-      setPendingNavAlerts(affected);
+      setPendingNavAlerts(bodyAffected);
       setPendingNavCtx(ctx);
+      setDetourDestInZone(isDestInZone);
       setShowDisasterModal(true);
     } else {
       setNavRoute(route);
       setIsNavigating(true);
+      setNavIsRecommend(ctx.type === 'recommend');
     }
-  }, [activeAlerts]);
+  }, [activeAlerts, userLat, userLng]);
 
   const handleConfirmNavigation = useCallback(() => {
     if (!pendingNavRoute) return;
     setNavRoute(pendingNavRoute);
     setIsNavigating(true);
+    setNavIsRecommend(pendingNavCtx?.type === 'recommend');
     setShowDisasterModal(false);
     setPendingNavRoute(null);
     setPendingNavAlerts([]);
     setPendingNavCtx(null);
     setDetourDisasterZones([]);
     setDetourManualRoutes([]);
-  }, [pendingNavRoute]);
+    setDetourDestInZone(false);
+    setDetourCategoryBias(undefined);
+  }, [pendingNavRoute, pendingNavCtx]);
+
+  const handleConfirmDestWarning = useCallback(() => {
+    if (!pendingNavRoute) return;
+    setNavRoute(pendingNavRoute);
+    setIsNavigating(true);
+    setNavIsRecommend(pendingNavCtx?.type === 'recommend');
+    setShowDestWarning(false);
+    setPendingNavRoute(null);
+    setPendingNavAlerts([]);
+    setPendingNavCtx(null);
+  }, [pendingNavRoute, pendingNavCtx]);
+
+  const handleCancelDestWarning = useCallback(() => {
+    setShowDestWarning(false);
+    setPendingNavRoute(null);
+    setPendingNavAlerts([]);
+    setPendingNavCtx(null);
+  }, []);
 
   const handleDetourSearch = useCallback(async () => {
     const zones: DisasterZoneInfo[] = activeAlerts
       .filter(a => a.lat && a.lng)
       .map(a => ({ lat: a.lat!, lng: a.lng!, radius_m: a.radiusM ?? 2000 }));
+
+    // 원본 코스의 지배 카테고리 파악 → 우회 탐색 시 해당 카테고리 후보를 2배 샘플링해 코스 성격 유지
+    const places = pendingNavRoute?.places ?? [];
+    const catCounts: Partial<Record<Category, number>> = {};
+    for (const p of places) catCounts[p.category] = (catCounts[p.category] ?? 0) + 1;
+    const dominantCat = (Object.entries(catCounts) as [Category, number][])
+      .sort((a, b) => b[1] - a[1])[0]?.[0];
+
     setDetourDisasterZones(zones);
 
     if (pendingNavCtx?.type === 'manual') {
       setDetourManualLoading(true);
       setDetourManualRoutes([]);
       try {
-        const routes = await buildManualRoutes(pendingNavCtx.origin, pendingNavCtx.dest, zones);
+        const routes = await buildManualRoutes(pendingNavCtx.origin, pendingNavCtx.dest, zones, dominantCat);
         setDetourManualRoutes(routes);
       } catch (e) {
         console.error("[DetourSearch] 직접 입력 우회 경로 탐색 실패:", e);
@@ -585,32 +732,38 @@ const RouteScreen: FC = () => {
         setDetourManualLoading(false);
       }
     } else {
+      setDetourCategoryBias(dominantCat ? { [dominantCat]: 2 } : undefined);
       recRefetch();
     }
-  }, [activeAlerts, pendingNavCtx, recRefetch]);
+  }, [activeAlerts, pendingNavCtx, pendingNavRoute, recRefetch]);
 
   const handleSelectDetour = useCallback((detourRoute: RecommendedRoute) => {
     clearMapLayers();
+    const isManual = pendingNavCtx?.type === 'manual';
     if (kakaoMapRef.current && isMapReady && detourRoute.roads.length > 0) {
-      const isManual = pendingNavCtx?.type === 'manual';
       const waypoints = (isManual ? detourRoute.places : detourRoute.places.slice(0, -1))
         .map(p => ({ lat: p.lat, lng: p.lng, name: p.name }));
       drawOnMap(detourRoute.roads, waypoints, kakaoMapRef, polylineListRef, overlayListRef);
     }
     setNavRoute(detourRoute);
     setIsNavigating(true);
+    setNavIsRecommend(!isManual);
     setShowDisasterModal(false);
     setPendingNavRoute(null);
     setPendingNavAlerts([]);
     setPendingNavCtx(null);
     setDetourDisasterZones([]);
     setDetourManualRoutes([]);
+    setDetourDestInZone(false);
+    setDetourCategoryBias(undefined);
   }, [clearMapLayers, kakaoMapRef, isMapReady, pendingNavCtx, polylineListRef, overlayListRef]);
 
   const handleCancelNavigation = useCallback(() => {
     setIsNavigating(false);
     setNavRoute(null);
+    setNavIsRecommend(false);
     setDetourDisasterZones([]);
+    setDetourCategoryBias(undefined);
     clearMapLayers();
   }, [clearMapLayers]);
 
@@ -692,7 +845,12 @@ const RouteScreen: FC = () => {
   }, [searchResults]);
 
   const handleSelectPlace  = (place: Place | null) => setSelectedPlace(prev => prev?.id === place?.id ? null : place);
-  const handleSelectRadius = (idx: number) => { setSelectedRadiusIdx(idx); setSelectedPlace(null); };
+  const handleSelectRadius = (idx: number) => {
+    setSelectedRadiusIdx(idx);
+    setSelectedPlace(null);
+    // 반경이 바뀌면 캐시 무시하고 즉시 재탐색
+    kakaoRefetch();
+  };
   const handleSetOrigin    = (p: RoutePoint | null) => setRouteState(prev => ({ ...prev, origin: p }));
   const handleSetDest      = (p: RoutePoint | null) => setRouteState(prev => ({ ...prev, destination: p }));
   const handleSetResult    = (r: RouteResult | null) => setRouteState(prev => ({ ...prev, result: r }));
@@ -808,17 +966,30 @@ const RouteScreen: FC = () => {
               onCancelNavigation={handleCancelNavigation}
               isServicesReady={isServicesReady}
               disasterZones={detourDisasterZones}
+              disasterDetourActive={showDisasterModal}
+              navRoute={navRoute}
+              navIsRecommend={navIsRecommend}
             />
           )}
         </div>
 
-        {/* ── [CHANGED] MODAL (우측 맵 영역에서 좌측 사이드바 영역 최하단으로 이동) ── */}
+        {/* 도착지 재난구역 경고 모달 */}
+        {showDestWarning && pendingNavRoute && pendingNavAlerts.length > 0 && (
+          <DestinationWarningModal
+            alerts={pendingNavAlerts}
+            onConfirm={handleConfirmDestWarning}
+            onCancel={handleCancelDestWarning}
+          />
+        )}
+
+        {/* 우회 경로 선택 모달 */}
         {showDisasterModal && pendingNavRoute && pendingNavAlerts.length > 0 && (
           <DisasterRouteChoiceModal
             route={pendingNavRoute}
             alerts={pendingNavAlerts}
             detourRoutes={pendingNavCtx?.type === 'manual' ? detourManualRoutes : recRoutes}
             detourLoading={pendingNavCtx?.type === 'manual' ? detourManualLoading : recIsLoading}
+            destInZone={detourDestInZone}
             onKeep={handleConfirmNavigation}
             onDetour={handleDetourSearch}
             onSelectDetour={handleSelectDetour}
@@ -831,6 +1002,8 @@ const RouteScreen: FC = () => {
               setPendingNavCtx(null);
               setDetourDisasterZones([]);
               setDetourManualRoutes([]);
+              setDetourDestInZone(false);
+              setDetourCategoryBias(undefined);
             }}
           />
         )}
@@ -843,7 +1016,7 @@ const RouteScreen: FC = () => {
         <div ref={mapElRef} style={{ position: "absolute", inset: 0 }} />
 
         {/* ── 검색창 / 현위치 / 로그인 ── */}
-        <div style={{ position: "absolute", top: 16, left: 16, right: 16, zIndex: 50 }}>
+        <div style={{ position: "absolute", top: 16, left: 16, right: 16, zIndex: 2000 }}>
           <div style={{ background: "rgba(255,255,255,0.96)", backdropFilter: "blur(10px)", borderRadius: 14, boxShadow: "0 2px 16px rgba(0,0,0,0.12)", display: "flex", alignItems: "center", gap: 10, padding: "10px 14px" }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={COLOR_TEXT_SUB} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="22" y2="22" />

@@ -20,6 +20,42 @@ import type { Place, Category } from "../types/type";
 // ── [CONFIG] ──────────────────────────────────────────────
 
 
+// ── [BLACKLIST] 주변 탐색 제외 장소 ─────────────────────
+// routemodel.py 블랙리스트와 동일 기준
+
+const _EXACT_BL = new Set([
+  "주차장", "파킹", "주차타워",
+  "ATM", "현금인출기",
+  "편의점", "GS25", "세븐일레븐", "미니스톱",
+  "이마트", "홈플러스", "롯데마트",
+  "주유소", "충전소", "세차장",
+  "구청", "동사무소", "주민센터", "경찰서", "소방서",
+  "우체국", "세무서", "법원", "등기소",
+  "모텔", "여관", "고시원", "실버타운",
+  "어린이집", "유치원",
+  "공중화장실", "인력사무소", "경로당",
+  "코인세탁", "크린토피아",
+  "코인노래방", "인쇄소",
+]);
+
+const _SUBSTR_BL = [
+  "저축은행", "농협", "신한은행", "국민은행", "하나은행", "우리은행", "기업은행",
+  "새마을금고", "신협",
+  "한의원", "치과", "안과", "피부과", "약국",
+  "이동통신대리점", "통신대리점", "핸드폰대리점",
+  "공인중개사", "부동산중개",
+  "세탁소", "코인세탁기",
+  "네일샵", "속눈썹",
+  "복지관",
+  "빨래방",
+  "CU편의점", "CU 편의점",
+];
+
+const isNearbyBlacklisted = (name: string): boolean => {
+  for (const kw of _EXACT_BL) if (name.includes(kw)) return true;
+  return _SUBSTR_BL.some(kw => name.includes(kw));
+};
+
 const KAKAO_CATEGORY_LIST: { code: string; category: Category }[] = [
   { code: "AT4", category: "명소" },   // 관광명소
   { code: "CT1", category: "문화" },   // 문화시설
@@ -71,7 +107,7 @@ interface TaDetailResponse {
 //   Option C) TripAdvisor 대신 Google Places API로 교체
 //             (서버-서버 호출 정상 동작, 평점·리뷰 동일하게 제공)
 const _TA_KEY  = import.meta.env.VITE_TRIPADVISOR_API_KEY ?? "";
-const _TA_BASE = "https://api.content.tripadvisor.com/api/v1";
+const _TA_BASE = "/vite-proxy/tripadvisor/api/v1";
 const taUrl = (path: string) => `${_TA_BASE}/${path}`;
 
 export const fetchTaLocationId = async (
@@ -152,7 +188,6 @@ export const useKakaoNearby = ({
       return;
     }
 
-    // 세션 캐시 확인
     const cacheKey = `kakao_nearby_${userLat.toFixed(4)}_${userLng.toFixed(4)}_${radiusMeter}`;
     const cached   = sessionStorage.getItem(cacheKey);
     if (cached) {
@@ -187,7 +222,7 @@ export const useKakaoNearby = ({
             if (status === (window.kakao.maps.services as any).Status.OK) {
               result.forEach(item => {
                 const dist = parseInt(item.distance, 10);
-                if (!seenIds.has(item.id) && dist <= radiusMeter) {
+                if (!seenIds.has(item.id) && dist <= radiusMeter && !isNearbyBlacklisted(item.place_name)) {
                   seenIds.add(item.id);
                   rawPlaces.push({ item, category });
                 }

@@ -119,7 +119,7 @@ const backendUrl = (path: string) => `${_BASE}/api${path}`;
 // TripAdvisor — 브라우저 직접 호출 (임시)
 // 서버 IP가 TripAdvisor WAF에 차단되므로 브라우저 IP로 직접 호출.
 const _TA_KEY  = import.meta.env.VITE_TRIPADVISOR_API_KEY ?? "";
-const _TA_BASE = "https://api.content.tripadvisor.com/api/v1";
+const _TA_BASE = "/vite-proxy/tripadvisor/api/v1";
 const taUrl = (path: string) => `${_TA_BASE}/${path}`;
 
 // ── [FEEDBACK] ───────────────────────────────────────────
@@ -224,6 +224,7 @@ interface UseRecommendedRouteOptions {
   userLng: number;
   enabled: boolean;
   disasterZones?: DisasterZoneInfo[];
+  categoryBias?: Partial<Record<Category, number>>; // 카테고리별 샘플 배율 (우회 탐색 시 코스 유형 유지)
 }
 
 interface UseRecommendedRouteResult {
@@ -234,7 +235,7 @@ interface UseRecommendedRouteResult {
 }
 
 export const useRecommendedRoute = ({
-  userLat, userLng, enabled, disasterZones,
+  userLat, userLng, enabled, disasterZones, categoryBias,
 }: UseRecommendedRouteOptions): UseRecommendedRouteResult => {
   const [routes,    setRoutes]    = useState<RecommendedRoute[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -298,7 +299,8 @@ export const useRecommendedRoute = ({
 
     // ── Step 2~3: TripAdvisor 평점 보강 → 백엔드 ML 추천 → Directions 호출
     const buildRoutes = async (items: { item: KakaoPlaceItem; category: Category }[]) => {
-      // 카테고리별 최대 4개씩 균등 샘플링 (특정 카테고리 독점 방지)
+      // 카테고리별 균등 샘플링 (특정 카테고리 독점 방지)
+      // categoryBias가 있으면 해당 카테고리의 샘플 한도를 배율만큼 확대해 코스 유형 유지
       const PER_CAT = 4;
       const byCat = new Map<Category, { item: KakaoPlaceItem; category: Category }[]>();
       for (const raw of items) {
@@ -306,9 +308,13 @@ export const useRecommendedRoute = ({
         arr.push(raw);
         byCat.set(raw.category, arr);
       }
-      const candidates = [...byCat.values()].flatMap(arr => arr.slice(0, PER_CAT));
-      // PER_CAT 초과분 — 재난구역 제거 보완용 예비 장소 (TA 평점 조회 없이 전송)
-      const reserveItems = [...byCat.values()].flatMap(arr => arr.slice(PER_CAT));
+      const candidates: { item: KakaoPlaceItem; category: Category }[] = [];
+      const reserveItems: { item: KakaoPlaceItem; category: Category }[] = [];
+      for (const [cat, arr] of byCat) {
+        const limit = Math.round(PER_CAT * (categoryBias?.[cat] ?? 1));
+        candidates.push(...arr.slice(0, limit));
+        reserveItems.push(...arr.slice(limit));
+      }
 
       // TripAdvisor 평점 — 캐시 히트 시 건너뜀 (429 rate limit 방지)
       const cachedMap = new Map<string, TaDetail | null>();
@@ -470,9 +476,9 @@ export const useRecommendedRoute = ({
     };
 
     return () => { cancelledRef.current = true; };
-  // disasterZones 변경(우회 탐색) 시 재실행 — 객체 참조 대신 JSON 문자열 비교
+  // disasterZones·categoryBias 변경(우회 탐색) 시 재실행 — 객체 참조 대신 JSON 문자열 비교
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userLat, userLng, enabled, fetchKey, JSON.stringify(disasterZones ?? [])]);
+  }, [userLat, userLng, enabled, fetchKey, JSON.stringify(disasterZones ?? []), JSON.stringify(categoryBias ?? {})]);
 
   const refetch = useCallback(() => {
     const cacheKey = `rec_routes_${userLat.toFixed(4)}_${userLng.toFixed(4)}`;

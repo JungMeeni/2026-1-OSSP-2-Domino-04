@@ -112,7 +112,7 @@ const DisasterAlertBanner: FC<DisasterAlertBannerProps> = ({
         position:   "fixed",
         top:        120,
         right:      16,
-        zIndex:     900,
+        zIndex:     980,
         background: COLOR_SURFACE,
         borderRadius: 16,
         border:     `1.5px solid ${color.border}`,
