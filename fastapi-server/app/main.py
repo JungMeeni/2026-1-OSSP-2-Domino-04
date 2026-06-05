@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.routers import disaster, route, population, cache, tripadvisor, kakao, tmap
+from app.routers import disaster, route, routemodel, population, cache, tripadvisor, kakao, tmap
 from app.services.scheduler import scheduler
 from app.services.event_detector import DisasterMessage
 from app.database import get_db
@@ -88,6 +88,7 @@ app.add_middleware(
 app.include_router(disaster.router, prefix="/disaster")
 app.include_router(population.router, prefix="/population")
 app.include_router(route.router, prefix="/route")
+app.include_router(routemodel.router, prefix="/route")
 app.include_router(cache.router, prefix="/cache")
 app.include_router(tripadvisor.router, prefix="/tripadvisor")
 app.include_router(kakao.router)

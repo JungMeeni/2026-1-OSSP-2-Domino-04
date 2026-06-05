@@ -3,9 +3,7 @@ import json
 import os
 from typing import Dict, List
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -24,8 +22,6 @@ _DEFAULT_WEIGHTS: Dict[str, float] = {
     "명소": 1.4, "식당": 1.4, "문화": 1.3, "공원": 1.2, "카페": 1.1, "갤러리": 1.1, "거리": 1.0,
 }
 _LEARNING_RATE = 0.05
-
-_ML_SERVER_URL = os.getenv("ML_SERVER_URL", "http://ml-server:8001")
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +112,7 @@ class RouteCalculateRequest(BaseModel):
     routeData: dict
 
 
-class FeedbackRequest(BaseModel):
+class RouteFeedbackRequest(BaseModel):
     selected_categories: List[str]
     route_type: str = ""
 
@@ -132,7 +128,7 @@ def get_weights():
 
 
 @router.post("/feedback")
-def update_weights_from_feedback(request: FeedbackRequest):
+def update_weights_from_feedback(request: RouteFeedbackRequest):
     """사용자가 선택한 경로의 카테고리 기반으로 가중치 업데이트."""
     weights = _load_weights()
     updated = _update_weights(weights, request.selected_categories)
@@ -202,25 +198,3 @@ def calculate_route(
         "affected_sections": affected_sections,
         "disaster_warnings": disaster_warnings,
     }
-
-
-# ---------------------------------------------------------------------------
-# ML 서버 프록시 — routemodel은 ml-server 컨테이너에서 실행
-# ---------------------------------------------------------------------------
-
-@router.post("/recommend")
-async def proxy_recommend(request: Request):
-    """ML 서버로 경로 추천 요청을 프록시 (MLP 채점 + Held-Karp+2-opt)"""
-    body = await request.json()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.post(f"{_ML_SERVER_URL}/recommend", json=body)
-    return JSONResponse(content=res.json(), status_code=res.status_code)
-
-
-@router.post("/recommend/feedback")
-async def proxy_feedback(request: Request):
-    """ML 서버로 피드백 전달 (온라인 학습 — BCE + Adam)"""
-    body = await request.json()
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.post(f"{_ML_SERVER_URL}/recommend/feedback", json=body)
-    return JSONResponse(content=res.json(), status_code=res.status_code)

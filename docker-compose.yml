@@ -87,7 +87,6 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - EXPRESS_URL=http://express-server:3000
-      - ML_SERVER_URL=http://ml-server:8001
       - TRIPADVISOR_API_KEY=${TRIPADVISOR_API_KEY}
       - KAKAO_REST_API_KEY=${KAKAO_REST_API_KEY}
       - KAKAO_DIRECTIONS_URL=${KAKAO_DIRECTIONS_URL}
@@ -96,27 +95,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ml-server:
-        condition: service_started
-    networks:
-      - app-network
-
-  ml-server:
-    build:
-      context: .
-      dockerfile: ml-server/Dockerfile
-    restart: unless-stopped
-    ports:
-      - "8001:8001"
-    volumes:
-      - ml_weights:/app/weights
-    healthcheck:
-      test: ["CMD", "conda", "run", "-n", "ml_env", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 30s
-      timeout: 15s
-      retries: 3
-      start_period: 120s
     networks:
       - app-network
 
@@ -126,4 +104,3 @@ networks:
 
 volumes:
   redis_data:
-  ml_weights:

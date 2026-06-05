@@ -55,7 +55,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "..", "weights")
+# fastapi-server/app/routers/ 기준으로 두 단계 위(fastapi-server/)의 weights/ 디렉터리
+_WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "weights")
 _WEIGHTS_A   = os.path.join(_WEIGHTS_DIR, "weights_A.pt")
 _WEIGHTS_B   = os.path.join(_WEIGHTS_DIR, "weights_B.pt")
 _WEIGHTS_C   = os.path.join(_WEIGHTS_DIR, "weights_C.pt")
@@ -116,7 +117,7 @@ class RouteResponse(BaseModel):
     routes: list[RouteCandidate]
 
 
-class FeedbackRequest(BaseModel):
+class MLFeedbackRequest(BaseModel):
     """
     selected_places : 사용자가 고른 코스의 장소 목록
     rejected_places : 선택받지 못한 코스들의 장소 목록 (중복 제거해서 전달)
@@ -161,11 +162,9 @@ _SUBSTR_BLACKLIST: list[str] = [
 
 
 def is_blacklisted(name: str) -> bool:
-    # 1) 이름 자체가 exact 키워드와 일치하거나 포함되는지
     for kw in _EXACT_BLACKLIST:
         if kw in name:
             return True
-    # 2) 긴 복합어 substring 검사
     for kw in _SUBSTR_BLACKLIST:
         if kw in name:
             return True
@@ -367,9 +366,6 @@ def compute_distance_matrix(gdf: gpd.GeoDataFrame) -> np.ndarray:
 
 # ══════════════════════════════════════════════════════════
 # 6. Dijkstra + Held-Karp TSP (꼬임 없는 최단 경로)
-#
-#    n ≤ 15에서 정확한 최단 해를 보장.
-#    2D 유클리드 공간에서 최단 TSP = 교차 없는 경로.
 # ══════════════════════════════════════════════════════════
 
 def _build_nx_graph(dist_matrix: np.ndarray) -> nx.Graph:
@@ -387,10 +383,6 @@ def _dijkstra_held_karp(
     user_node: int,
     place_nodes: list[int],
 ) -> list[int]:
-    """
-    Dijkstra 최단 거리 + Held-Karp DP로 TSP 정확 풀이.
-    반환: place_nodes의 최적 방문 순서 (user_node 출발 기준)
-    """
     n = len(place_nodes)
     if n == 0:
         return []
@@ -439,7 +431,6 @@ def _dijkstra_held_karp(
     if dp.get((full_mask, best_last_i), INF) == INF:
         return place_nodes[:]
 
-    # 역추적
     route_indices: list[int] = []
     mask, curr_i = full_mask, best_last_i
     while curr_i != -1:
@@ -469,15 +460,12 @@ def _two_opt(route: list[int], dist: np.ndarray) -> list[int]:
 
 
 def _two_opt_path(route: list[int], dist: np.ndarray) -> list[int]:
-    """
-    경로(path)용 2-opt — route[0]·route[-1]을 고정 출발·도착으로 취급.
-    내부 구간만 역전시켜 교차를 제거한다.
-    """
+    """경로(path)용 2-opt — route[0]·route[-1]을 고정 출발·도착으로 취급."""
     improved = True
     while improved:
         improved = False
-        for i in range(len(route) - 2):          # i: 0 .. n-2
-            for j in range(i + 2, len(route) - 1):  # j: i+2 .. n-2  (route[j+1] 항상 존재)
+        for i in range(len(route) - 2):
+            for j in range(i + 2, len(route) - 1):
                 a, b = route[i], route[i + 1]
                 c, d = route[j], route[j + 1]
                 if dist[a][b] + dist[c][d] > dist[a][c] + dist[b][d] + 1e-9:
@@ -492,10 +480,6 @@ def _dijkstra_held_karp_path(
     dest_node: int,
     place_nodes: list[int],
 ) -> list[int]:
-    """
-    Held-Karp DP: 고정 출발(origin_node)→고정 도착(dest_node) 경로에서
-    place_nodes의 최적 방문 순서를 반환.
-    """
     n = len(place_nodes)
     if n == 0:
         return []
@@ -539,7 +523,6 @@ def _dijkstra_held_karp_path(
                     parent[new_state] = last_i
 
     full_mask = (1 << n) - 1
-    # 마지막 경유지 → 도착지 거리까지 포함해 최적 last 선택
     best_last_i = min(
         range(n),
         key=lambda i: dp.get((full_mask, i), INF) + d(place_nodes[i], dest_node),
@@ -591,16 +574,11 @@ def optimize_route_with_dest(
     dest_lat: float,
     dest_lng: float,
 ) -> list[PlaceInput]:
-    """
-    직접 입력 탭용: 출발지·도착지 고정 경로 최적화.
-    Dijkstra + Held-Karp(path) + 2-opt(path) 로 경유지 순서를 결정.
-    출발 → 경유지 → 도착이 최대한 일직선에 가깝도록 교차를 제거한다.
-    """
+    """직접 입력 탭용: 출발지·도착지 고정 경로 최적화."""
     if len(places) <= 1:
         return places
 
     n = len(places)
-    # 노드 배치: 0=출발, 1..n=경유지, n+1=도착
     rows = [{"idx": 0, "lat": user_lat, "lng": user_lng}]
     for i, p in enumerate(places, start=1):
         rows.append({"idx": i, "lat": p.lat, "lng": p.lng})
@@ -620,10 +598,9 @@ def optimize_route_with_dest(
 
     hk_route = _dijkstra_held_karp_path(G, 0, dest_node, place_nodes)
 
-    # 2-opt: [출발(0)] + 경유지 + [도착(n+1)] — 양 끝 고정
     full_route = [0] + hk_route + [dest_node]
     opt_route  = _two_opt_path(full_route, dist_matrix)
-    final_nodes = opt_route[1:-1]  # 출발·도착 제외
+    final_nodes = opt_route[1:-1]
 
     return [places[node - 1] for node in final_nodes if 1 <= node <= n]
 
@@ -637,7 +614,7 @@ def compute_place_score(
     model: nn.Module,
     cat_weights: dict[str, float] | None = None,
 ) -> float:
-    """A·C 코스용 — 5차원 특성으로 점수 계산. cat_weights로 코스별 가중치 주입."""
+    """A·C 코스용 — 5차원 특성으로 점수 계산."""
     weights      = cat_weights if cat_weights is not None else CATEGORY_WEIGHT
     feats        = _base_features(place)
     rating_score = place.rating * math.log10(place.num_reviews + 1) if place.rating > 0 else 0.0
@@ -654,7 +631,7 @@ def compute_place_score_b(
     model: PlaceScoringNetB,
     cat_weights: dict[str, float] | None = None,
 ) -> float:
-    """B 코스용 — 6차원 특성으로 점수 계산. cat_weights로 코스별 가중치 주입."""
+    """B 코스용 — 6차원 특성으로 점수 계산."""
     weights      = cat_weights if cat_weights is not None else CATEGORY_WEIGHT
     feats        = _base_features(place)
     dist_norm    = min(place.distance, 5000) / 5000.0
@@ -676,7 +653,6 @@ MAX_PLACES = 5
 _SIGHT_CATS = {"명소", "문화", "갤러리", "공원", "거리"}
 _FOOD_CATS  = {"식당", "카페"}
 
-# 코스별 카테고리 가중치 — MLP 점수에 곱해 코스 성격 강화
 _W_SIGHT = {"명소": 2.0, "문화": 1.8, "갤러리": 1.5, "공원": 1.3,
             "거리": 0.8, "카페": 0.3, "식당": 0.2}
 _W_FOOD  = {"식당": 2.2, "카페": 1.8, "명소": 0.8, "문화": 0.6,
@@ -686,14 +662,12 @@ _W_BAL   = {"명소": 1.4, "식당": 1.3, "카페": 1.2, "문화": 1.2,
 
 
 def select_sightseeing(df: pd.DataFrame) -> pd.DataFrame:
-    """A코스: 명소·문화·갤러리·공원 카테고리 중 평점 TOP5 (부족하면 전체 pool 사용)"""
     sight_df = df[df["category"].isin(_SIGHT_CATS)]
     pool     = sight_df if len(sight_df) >= 3 else df
     return pool.nlargest(MAX_PLACES, "final_score")
 
 
 def select_food_tour(df: pd.DataFrame) -> pd.DataFrame:
-    """B코스: 식당·카페 최대 3개 + 명소·문화 나머지 채우기"""
     food_df  = df[df["category"].isin(_FOOD_CATS)].nlargest(3, "final_score")
     food_ids = set(food_df["id"])
     sight_df = df[df["category"].isin(_SIGHT_CATS) & ~df["id"].isin(food_ids)]
@@ -707,7 +681,6 @@ def select_food_tour(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def select_balanced(df: pd.DataFrame) -> pd.DataFrame:
-    """C코스: 카테고리별 1개씩 (거리 효율 우선 정렬) + 나머지 채우기"""
     df = df.copy()
     df["efficiency"] = df["final_score"] - df["distance_m"] / 600.0
     by_eff = df.sort_values("efficiency", ascending=False)
@@ -757,12 +730,6 @@ COURSES = [
 
 # ══════════════════════════════════════════════════════════
 # 9. 온라인 학습 — BCE 손실 + Adam
-#
-#    3개 모델 모두 동일한 피드백으로 갱신:
-#      selected_places → target 1.0  (사용자가 선택한 장소)
-#      rejected_places → target 0.0  (선택받지 못한 장소)
-#
-#    학습 후 weights_A/B/C.pt 즉시 저장 → 다음 /recommend부터 반영.
 # ══════════════════════════════════════════════════════════
 
 def _train_one(
@@ -773,7 +740,6 @@ def _train_one(
     steps: int,
     model_name: str = "",
 ) -> float:
-    """학습 후 최종 loss를 반환한다."""
     if not pos_tensors:
         logger.warning("[TRAIN] %s: pos_tensors 없음 — 학습 스킵", model_name)
         return 0.0
@@ -807,7 +773,6 @@ def _update_models_from_feedback(
     lr: float = 0.005,
     steps: int = 15,
 ) -> None:
-    """3개 모델을 동일한 피드백으로 갱신하고 가중치 파일에 저장."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(
         "[FEEDBACK] %s  갱신 시작 — selected=%d rejected=%d",
@@ -882,7 +847,6 @@ async def recommend_routes(req: RouteRequest) -> RouteResponse:
             df["final_score"] = scaler.fit_transform(df[["final_score"]]).flatten()
 
         rated_df = df[df["final_score"] > 0]
-        # rated_df가 부족하면 전체 pool 사용, 그래도 비어있으면 스킵
         pool_df  = rated_df if len(rated_df) >= 3 else df
         if pool_df.empty:
             logger.warning("[RECOMMEND] %s: pool 비어있음 — 코스 스킵", course["label"])
@@ -942,11 +906,10 @@ async def recommend_routes(req: RouteRequest) -> RouteResponse:
 
 
 @router.post("/recommend/feedback")
-async def route_feedback(req: FeedbackRequest):
+async def route_ml_feedback(req: MLFeedbackRequest):
     """
     사용자가 선택한 코스(selected_places)를 positive,
     선택받지 못한 코스(rejected_places)를 negative로 하여 3개 MLP를 온라인 학습합니다.
-    학습된 가중치는 파일에 저장되어 다음 추천부터 즉시 반영됩니다.
     """
     if not req.selected_places:
         logger.warning("[FEEDBACK] selected_places 없음 — 학습 스킵")
