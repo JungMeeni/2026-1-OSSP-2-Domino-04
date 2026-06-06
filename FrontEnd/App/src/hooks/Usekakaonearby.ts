@@ -16,6 +16,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Place, Category } from "../types/type";
+import type { DisasterZoneInfo } from "./Userecommendedroute";
 
 // ── [CONFIG] ──────────────────────────────────────────────
 
@@ -96,19 +97,18 @@ interface TaDetailResponse {
 
 // ── [UTIL] ────────────────────────────────────────────────
 
-// TripAdvisor API — 브라우저에서 직접 호출 (임시)
-// 서버 IP(Docker/EC2)는 TripAdvisor WAF에 의해 403으로 차단되므로
-// 브라우저 IP로 직접 호출한다. API 키는 VITE_TRIPADVISOR_API_KEY 환경변수 사용.
-//
-// [해결 방향 — 백엔드 팀 참고]
-//   Option A) 주거용 프록시(residential proxy) 서버 경유 — httpx ProxyTransport 사용
-//   Option B) FastAPI 프록시를 없애고 브라우저에서 직접 호출 ← 현재 방식
-//             (VITE_TRIPADVISOR_API_KEY 이미 .env에 있음)
-//   Option C) TripAdvisor 대신 Google Places API로 교체
-//             (서버-서버 호출 정상 동작, 평점·리뷰 동일하게 제공)
-const _TA_KEY  = import.meta.env.VITE_TRIPADVISOR_API_KEY ?? "";
-const _TA_BASE = "/vite-proxy/tripadvisor/api/v1";
-const taUrl = (path: string) => `${_TA_BASE}/${path}`;
+export const haversineM = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const R = 6371000;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const dφ = (lat2 - lat1) * Math.PI / 180, dλ = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(dλ / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+// TripAdvisor API — idfriend.kr 서버 프록시 경유
+// Express 서버가 idfriend.kr에 배포되어 서버 IP로 TripAdvisor를 호출하므로
+// WAF 차단 없이 정상 동작한다. API 키는 서버에서 처리.
+const _TA_BASE = (import.meta.env.VITE_BACKEND_URL ?? "") + "/api/tripadvisor";
 
 export const fetchTaLocationId = async (
   placeName: string,
@@ -120,9 +120,8 @@ export const fetchTaLocationId = async (
       searchQuery: placeName,
       latLong:     `${lat},${lng}`,
       language:    "ko",
-      key:         _TA_KEY,
     });
-    const res  = await fetch(`${taUrl("location/search")}?${params}`, {
+    const res  = await fetch(`${_TA_BASE}/search?${params}`, {
       headers: { accept: "application/json" },
     });
     if (!res.ok) return null;
@@ -137,8 +136,7 @@ export const fetchTaDetail = async (
   locationId: string,
 ): Promise<{ rating: number; reviews: number } | null> => {
   try {
-    const params = new URLSearchParams({ language: "ko", key: _TA_KEY });
-    const res    = await fetch(`${taUrl(`location/${locationId}/details`)}?${params}`, {
+    const res = await fetch(`${_TA_BASE}/details/${locationId}`, {
       headers: { accept: "application/json" },
     });
     if (!res.ok) return null;
@@ -155,10 +153,11 @@ export const fetchTaDetail = async (
 // ── [HOOK] ────────────────────────────────────────────────
 
 interface UseKakaoNearbyOptions {
-  userLat:     number;
-  userLng:     number;
-  radiusMeter: number;
-  enabled:     boolean;
+  userLat:       number;
+  userLng:       number;
+  radiusMeter:   number;
+  enabled:       boolean;
+  disasterZones?: DisasterZoneInfo[];
 }
 
 interface UseKakaoNearbyResult {
@@ -173,6 +172,7 @@ export const useKakaoNearby = ({
   userLng,
   radiusMeter,
   enabled,
+  disasterZones,
 }: UseKakaoNearbyOptions): UseKakaoNearbyResult => {
   const [placeList, setPlaceList] = useState<Place[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -189,13 +189,16 @@ export const useKakaoNearby = ({
     }
 
     const cacheKey = `kakao_nearby_${userLat.toFixed(4)}_${userLng.toFixed(4)}_${radiusMeter}`;
-    const cached   = sessionStorage.getItem(cacheKey);
-    if (cached) {
-      try {
-        setPlaceList(JSON.parse(cached));
-        return;
-      } catch {
-        sessionStorage.removeItem(cacheKey);
+    // 재난 구역이 있을 때는 캐시 사용 안 함 — 제외 장소가 달라지므로
+    if (!disasterZones?.length) {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        try {
+          setPlaceList(JSON.parse(cached));
+          return;
+        } catch {
+          sessionStorage.removeItem(cacheKey);
+        }
       }
     }
 
@@ -253,9 +256,9 @@ export const useKakaoNearby = ({
       items: { item: KakaoPlaceItem; category: Category }[],
     ) => {
       const maxCount = getMaxCount(radiusMeter);
-      // 카테고리별 균등 분배 후 거리순 재정렬 → maxCount개 선택
-      // (카페 등 특정 카테고리가 결과를 독점하지 않도록)
-      const perCat = Math.ceil(maxCount / KAKAO_CATEGORY_LIST.length);
+      // 재난 구역이 있을 때는 perCat을 3배로 늘려 예비 후보 확보
+      // → 구역 내 장소가 제거돼도 구역 밖 장소로 maxCount를 채울 수 있도록
+      const perCat = Math.ceil(maxCount * (disasterZones?.length ? 3 : 1) / KAKAO_CATEGORY_LIST.length);
       const byCat  = new Map<Category, typeof items>();
       for (const raw of items) {
         const arr = byCat.get(raw.category) ?? [];
@@ -268,7 +271,15 @@ export const useKakaoNearby = ({
         balanced.push(...arr.slice(0, perCat));
       }
       balanced.sort((a, b) => parseInt(a.item.distance) - parseInt(b.item.distance));
-      const top = balanced.slice(0, maxCount);
+
+      // 재난 구역 내 장소 제외 → 남은 장소에서 maxCount개 선택
+      const safeBalanced = disasterZones?.length
+        ? balanced.filter(({ item }) => {
+            const lat = parseFloat(item.y), lng = parseFloat(item.x);
+            return !disasterZones.some(z => haversineM(lat, lng, z.lat, z.lng) <= z.radius_m);
+          })
+        : balanced;
+      const top = safeBalanced.slice(0, maxCount);
 
       // location_id 배치 조회 (5개씩, 300ms 간격 — rate limit 방지)
       const idResults: (string | null)[] = [];
@@ -317,13 +328,16 @@ export const useKakaoNearby = ({
         };
       });
 
-      sessionStorage.setItem(cacheKey, JSON.stringify(places));
+      // 재난 구역이 있을 때는 캐시 저장 안 함 — 구역 해제 후 원본 목록 복원을 위해
+      if (!disasterZones?.length) sessionStorage.setItem(cacheKey, JSON.stringify(places));
       setPlaceList(places);
       setIsLoading(false);
     };
 
     return () => { cancelledRef.current = true; };
-  }, [userLat, userLng, radiusMeter, enabled, fetchKey]);
+  // disasterZones 객체 참조 대신 JSON 문자열 비교로 불필요한 재실행 방지
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userLat, userLng, radiusMeter, enabled, fetchKey, JSON.stringify(disasterZones ?? [])]);
 
   const refetch = useCallback(() => {
     const cacheKey = `kakao_nearby_${userLat.toFixed(4)}_${userLng.toFixed(4)}_${radiusMeter}`;

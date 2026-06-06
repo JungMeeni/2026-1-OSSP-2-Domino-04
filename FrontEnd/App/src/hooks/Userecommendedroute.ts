@@ -127,11 +127,10 @@ const setTaCache = (kakaoId: string, data: TaDetail) => {
 const _BASE    = import.meta.env.VITE_BACKEND_URL ?? "";
 const backendUrl = (path: string) => `${_BASE}/api${path}`;
 
-// TripAdvisor — 브라우저 직접 호출 (임시)
-// 서버 IP가 TripAdvisor WAF에 차단되므로 브라우저 IP로 직접 호출.
-const _TA_KEY  = import.meta.env.VITE_TRIPADVISOR_API_KEY ?? "";
-const _TA_BASE = "/vite-proxy/tripadvisor/api/v1";
-const taUrl = (path: string) => `${_TA_BASE}/${path}`;
+// TripAdvisor — idfriend.kr 서버 프록시 경유
+// Express 서버가 idfriend.kr에 배포되어 서버 IP로 TripAdvisor를 호출하므로
+// WAF 차단 없이 정상 동작한다. API 키는 서버에서 처리.
+const _TA_BASE = `${_BASE}/api/tripadvisor`;
 
 // ── [FEEDBACK] ───────────────────────────────────────────
 // 사용자가 코스를 선택(안내 시작)하면 두 피드백 엔드포인트를 fire-and-forget으로 호출.
@@ -181,8 +180,8 @@ export const sendRouteFeedback = (
 
 const fetchTaLocationId = async (name: string, lat: number, lng: number): Promise<string | null> => {
   try {
-    const params = new URLSearchParams({ searchQuery: name, latLong: `${lat},${lng}`, language: "ko", key: _TA_KEY });
-    const res    = await fetch(`${taUrl("location/search")}?${params}`, { headers: { accept: "application/json" } });
+    const params = new URLSearchParams({ searchQuery: name, latLong: `${lat},${lng}`, language: "ko" });
+    const res    = await fetch(`${_TA_BASE}/search?${params}`, { headers: { accept: "application/json" } });
     if (!res.ok) return null;
     const json   = await res.json();
     return json.data?.[0]?.location_id ?? null;
@@ -191,10 +190,9 @@ const fetchTaLocationId = async (name: string, lat: number, lng: number): Promis
 
 const fetchTaDetail = async (location_id: string): Promise<TaDetail | null> => {
   try {
-    const params = new URLSearchParams({ language: "ko", key: _TA_KEY });
-    const res    = await fetch(`${taUrl(`location/${location_id}/details`)}?${params}`, { headers: { accept: "application/json" } });
+    const res  = await fetch(`${_TA_BASE}/details/${location_id}`, { headers: { accept: "application/json" } });
     if (!res.ok) return null;
-    const json   = await res.json();
+    const json = await res.json();
     return { rating: parseFloat(json.rating ?? "0"), reviews: parseInt(json.num_reviews ?? "0", 10), webUrl: json.web_url ?? "" };
   } catch { return null; }
 };
@@ -215,7 +213,9 @@ const fetchDirections = async (
     });
     const res = await fetch(`${_BASE}/api/directions?${params}`);
     if (!res.ok) return { distance: 0, duration: 0, roads: [], taxiFare: 0, tollFare: 0 };
-    const data: DirectionsResponse = await res.json();
+    const json = await res.json();
+    // idfriend.kr Express 서버는 { route: {...}, disaster_analysis: {...} } 형태로 감싸서 반환
+    const data: DirectionsResponse = json.route ?? json;
     const route = data.routes?.[0];
     if (!route || route.result_code !== 0) return { distance: 0, duration: 0, roads: [], taxiFare: 0, tollFare: 0 };
     return {

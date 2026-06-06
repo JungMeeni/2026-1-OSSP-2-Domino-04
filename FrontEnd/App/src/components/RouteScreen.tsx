@@ -29,7 +29,7 @@ import {
   COLOR_DANGER,
 } from "../colors";
 
-import { useKakaoNearby }      from "../hooks/Usekakaonearby";
+import { useKakaoNearby, haversineM } from "../hooks/Usekakaonearby";
 import { useRecommendedRoute, type RecommendedRoute, type DisasterZoneInfo } from "../hooks/Userecommendedroute";
 import { useDisasterAlert, type DisasterAlert } from "../hooks/UseDisasterAlert";
 import { formatDuration, formatDistance }        from "../utils/Utils";
@@ -487,6 +487,14 @@ const RouteScreen: FC = () => {
   const [isNavigating,    setIsNavigating]    = useState<boolean>(false);
   const [navRoute,        setNavRoute]        = useState<RecommendedRoute | null>(null);
   const [navIsRecommend,  setNavIsRecommend]  = useState<boolean>(false);
+  const [navCtx,          setNavCtx]          = useState<NavRouteCtx | null>(null);
+  const [navDisasterToast, setNavDisasterToast] = useState<string | null>(null);
+  const [isAutoRerouting,  setIsAutoRerouting]  = useState<boolean>(false);
+
+  const handledNavAlertIdsRef  = useRef<Set<string>>(new Set());
+  const navToastTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoRerouteLoadedRef   = useRef<boolean>(false);
+  const isAutoReroutingRef     = useRef<boolean>(false);
 
   const [pendingNavRoute,      setPendingNavRoute]      = useState<RecommendedRoute | null>(null);
   const [pendingNavAlerts,     setPendingNavAlerts]     = useState<DisasterAlert[]>([]);
@@ -522,14 +530,22 @@ const RouteScreen: FC = () => {
   const { lat: userLat, lng: userLng, isLocating, locLabel } = useUserLocation();
   const radiusConfig  = RADIUS_OPTION_LIST[selectedRadiusIdx];
 
+  const { currentAlert, alertQueue, remainingSec, dismissCurrent } = useDisasterAlert(true);
+  const activeAlerts = alertQueue;
+
+  const nearbyDisasterZones: DisasterZoneInfo[] = activeAlerts
+    .filter(a => {
+      if (a.lat == null || a.lng == null) return false;
+      // 재난 구역이 주변 탐색 반경과 겹칠 때만 포함
+      return haversineM(userLat, userLng, a.lat, a.lng) < radiusConfig.meter + (a.radiusM ?? 2000);
+    })
+    .map(a => ({ lat: a.lat!, lng: a.lng!, radius_m: a.radiusM ?? 2000 }));
+
   const { placeList: kakaoPlaceList, isLoading: kakaoIsLoading, error: kakaoError, refetch: kakaoRefetch } =
-    useKakaoNearby({ userLat, userLng, radiusMeter: radiusConfig.meter, enabled: activeTab === "nearby" && !isLocating && isServicesReady });
+    useKakaoNearby({ userLat, userLng, radiusMeter: radiusConfig.meter, enabled: activeTab === "nearby" && !isLocating && isServicesReady, disasterZones: nearbyDisasterZones });
 
   const { routes: recRoutes, isLoading: recIsLoading, error: recError, refetch: recRefetch } =
     useRecommendedRoute({ userLat, userLng, enabled: activeTab === "route" && !isLocating && isServicesReady, disasterZones: detourDisasterZones, categoryBias: detourCategoryBias });
-
-  const { currentAlert, alertQueue, remainingSec, dismissCurrent } = useDisasterAlert(true);
-  const activeAlerts = alertQueue;
 
   const handleGoogleLogin = useGoogleLogin({
     onSuccess: async tokenRes => {
@@ -643,6 +659,12 @@ const RouteScreen: FC = () => {
         setIsNavigating(false);
         setNavRoute(null);
         setNavIsRecommend(false);
+        setNavCtx(null);
+        setIsAutoRerouting(false);
+        isAutoReroutingRef.current = false;
+        handledNavAlertIdsRef.current = new Set();
+        if (navToastTimerRef.current) clearTimeout(navToastTimerRef.current);
+        setNavDisasterToast(null);
         setDetourDisasterZones([]);
         setDetourCategoryBias(undefined);
       }
@@ -677,6 +699,8 @@ const RouteScreen: FC = () => {
           setNavRoute(route);
           setIsNavigating(true);
           setNavIsRecommend(ctx.type === 'recommend');
+          setNavCtx(ctx);
+          handledNavAlertIdsRef.current = new Set();
         }
         return;
       }
@@ -692,6 +716,8 @@ const RouteScreen: FC = () => {
       setNavRoute(route);
       setIsNavigating(true);
       setNavIsRecommend(ctx.type === 'recommend');
+      setNavCtx(ctx);
+      handledNavAlertIdsRef.current = new Set();
     }
   }, [activeAlerts, userLat, userLng]);
 
@@ -700,6 +726,8 @@ const RouteScreen: FC = () => {
     setNavRoute(pendingNavRoute);
     setIsNavigating(true);
     setNavIsRecommend(pendingNavCtx?.type === 'recommend');
+    setNavCtx(pendingNavCtx);
+    handledNavAlertIdsRef.current = new Set();
     setShowDisasterModal(false);
     setPendingNavRoute(null);
     setPendingNavAlerts([]);
@@ -715,6 +743,8 @@ const RouteScreen: FC = () => {
     setNavRoute(pendingNavRoute);
     setIsNavigating(true);
     setNavIsRecommend(pendingNavCtx?.type === 'recommend');
+    setNavCtx(pendingNavCtx);
+    handledNavAlertIdsRef.current = new Set();
     setShowDestWarning(false);
     setPendingNavRoute(null);
     setPendingNavAlerts([]);
@@ -770,6 +800,8 @@ const RouteScreen: FC = () => {
     setNavRoute(detourRoute);
     setIsNavigating(true);
     setNavIsRecommend(!isManual);
+    setNavCtx(pendingNavCtx);
+    handledNavAlertIdsRef.current = new Set();
     setShowDisasterModal(false);
     setPendingNavRoute(null);
     setPendingNavAlerts([]);
@@ -784,10 +816,96 @@ const RouteScreen: FC = () => {
     setIsNavigating(false);
     setNavRoute(null);
     setNavIsRecommend(false);
+    setNavCtx(null);
+    setIsAutoRerouting(false);
+    isAutoReroutingRef.current = false;
+    handledNavAlertIdsRef.current = new Set();
+    if (navToastTimerRef.current) clearTimeout(navToastTimerRef.current);
+    setNavDisasterToast(null);
     setDetourDisasterZones([]);
     setDetourCategoryBias(undefined);
     clearMapLayers();
   }, [clearMapLayers]);
+
+  // ── 안내 중 실시간 재난 감지 & 자동 우회 ────────────────────
+  useEffect(() => {
+    if (!isNavigating || !navRoute || isAutoReroutingRef.current) return;
+
+    const newlyAffected = activeAlerts.filter(a =>
+      !handledNavAlertIdsRef.current.has(a.id) &&
+      routePassesThroughAlert(navRoute, a)
+    );
+    if (newlyAffected.length === 0) return;
+
+    newlyAffected.forEach(a => handledNavAlertIdsRef.current.add(a.id));
+
+    // 토스트 알림 표시 (5초 후 자동 해제)
+    if (navToastTimerRef.current) clearTimeout(navToastTimerRef.current);
+    setNavDisasterToast("경로에 재난 구역이 발생했습니다. 우회 경로로 재안내합니다.");
+    navToastTimerRef.current = setTimeout(() => setNavDisasterToast(null), 5000);
+
+    const zones: DisasterZoneInfo[] = newlyAffected
+      .filter(a => a.lat != null && a.lng != null)
+      .map(a => ({ lat: a.lat!, lng: a.lng!, radius_m: a.radiusM ?? 2000 }));
+
+    const catCounts: Partial<Record<Category, number>> = {};
+    for (const p of navRoute.places) catCounts[p.category] = (catCounts[p.category] ?? 0) + 1;
+    const dominantCat = (Object.entries(catCounts) as [Category, number][])
+      .sort((a, b) => b[1] - a[1])[0]?.[0] as Category | undefined;
+
+    isAutoReroutingRef.current = true;
+    setIsAutoRerouting(true);
+    setDetourDisasterZones(zones);
+
+    if (!navIsRecommend && navCtx?.type === 'manual') {
+      // 직접 입력: 현재 위치 → 원래 목적지로 우회 경로 즉시 계산
+      const currentOrigin = { lat: userLat, lng: userLng, name: '현재 위치' };
+      buildManualRoutes(currentOrigin, navCtx.dest, zones, dominantCat)
+        .then(routes => {
+          if (routes.length === 0) return;
+          clearMapLayers();
+          const r = routes[0];
+          if (kakaoMapRef.current && isMapReady) {
+            drawOnMap(r.roads, r.places.map(p => ({ lat: p.lat, lng: p.lng, name: p.name })), kakaoMapRef, polylineListRef, overlayListRef);
+          }
+          setNavRoute(r);
+          setNavCtx(prev => prev ? { ...prev, origin: currentOrigin } : prev);
+        })
+        .catch(e => console.error("[AutoDetour] 직접 입력 우회 실패:", e))
+        .finally(() => { isAutoReroutingRef.current = false; setIsAutoRerouting(false); });
+    } else {
+      // 추천 경로: detourDisasterZones 갱신 + recRefetch → autoRerouteLoadedRef로 완료 감지
+      autoRerouteLoadedRef.current = false;
+      setDetourCategoryBias(dominantCat ? { [dominantCat]: 5 } : undefined);
+      recRefetch();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAlerts, isNavigating]);
+
+  // 추천 경로 자동 우회: loading → 완료 전환 시 첫 번째 경로로 교체
+  useEffect(() => {
+    if (!isAutoRerouting || !navIsRecommend) return;
+
+    if (recIsLoading) {
+      autoRerouteLoadedRef.current = true; // 로딩 시작 확인
+      return;
+    }
+    if (!autoRerouteLoadedRef.current) return; // 아직 로딩 시작 전
+
+    autoRerouteLoadedRef.current = false;
+    isAutoReroutingRef.current = false;
+    setIsAutoRerouting(false);
+
+    if (recRoutes.length === 0) return;
+    const best = recRoutes[0];
+    clearMapLayers();
+    if (kakaoMapRef.current && isMapReady) {
+      const waypoints = best.places.slice(0, -1).map(p => ({ lat: p.lat, lng: p.lng, name: p.name }));
+      drawOnMap(best.roads, waypoints, kakaoMapRef, polylineListRef, overlayListRef);
+    }
+    setNavRoute(best);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAutoRerouting, navIsRecommend, recIsLoading, recRoutes]);
 
   const searchRatingsRef = useRef(searchRatings);
   useEffect(() => { searchRatingsRef.current = searchRatings; }, [searchRatings]);
@@ -1085,6 +1203,14 @@ const RouteScreen: FC = () => {
             </div>
           )}
         </div>
+
+        {/* 안내 중 재난 발생 토스트 */}
+        {navDisasterToast && (
+          <div style={{ position: "absolute", top: 80, left: 16, zIndex: 1990, background: "rgba(30,41,59,0.93)", backdropFilter: "blur(8px)", color: "#fff", borderRadius: 12, padding: "10px 14px", fontSize: 13, fontWeight: 600, boxShadow: "0 4px 16px rgba(0,0,0,0.28)", maxWidth: 260, display: "flex", alignItems: "center", gap: 8, fontFamily: "'Noto Sans KR', sans-serif" }}>
+            <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
+            <span>{navDisasterToast}</span>
+          </div>
+        )}
 
         {/* 안내 중 상단 뱃지 */}
         {isNavigating && navRoute && (

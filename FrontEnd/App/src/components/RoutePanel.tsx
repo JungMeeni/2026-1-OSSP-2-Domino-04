@@ -640,9 +640,11 @@ export const buildManualRoutes = async (
         alternatives: "false",     road_details: "false",
         ...(wps ? { waypoints: wps } : {}),
       });
-      const dirRes = await fetch(`/api/directions?${params}`);
+      const dirRes = await fetch(`${import.meta.env.VITE_BACKEND_URL ?? ""}/api/directions?${params}`);
       if (!dirRes.ok) throw new Error(`Directions API 오류: ${dirRes.status}`);
-      const dirData = await dirRes.json();
+      const dirJson = await dirRes.json();
+      // idfriend.kr Express 서버는 { route: {...}, disaster_analysis: {...} } 형태로 감싸서 반환
+      const dirData = dirJson.route ?? dirJson;
       const route   = dirData.routes?.[0];
       if (!route || route.result_code !== 0) throw new Error(route?.result_msg ?? "경로 없음");
 
