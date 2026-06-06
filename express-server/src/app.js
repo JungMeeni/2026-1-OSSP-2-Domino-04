@@ -78,8 +78,11 @@ const mapRoutes = require('./routes/map');
 // 3. 엔드포인트별 라우터 매핑 (계층화)
 app.use('/api', mapRoutes);
 
-// 4. API 문서 경로 설정
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerFile));
+// 4. API 문서 경로 설정 (host를 요청 기준으로 동적 설정 — 로컬/EC2 모두 대응)
+app.use('/api-docs', (req, res, next) => {
+    swaggerFile.host = req.headers.host;
+    next();
+}, swaggerUi.serve, swaggerUi.setup(swaggerFile));
 
 // 서버 상태 확인용
 app.get('/', (req, res) => res.send('API Server is Running!'));

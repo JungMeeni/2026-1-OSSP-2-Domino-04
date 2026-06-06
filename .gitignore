@@ -1,18 +1,3 @@
-<<<<<<< HEAD
-# --- 공통 및 보안 ---
-.env
-.env.*
-mysql_data/
-firebase-adminsdk.json
-
-*.json
-!package.json
-!package-lock.json
-
-# --- Mac/Windows 시스템 파일 ---
-.DS_Store
-Thumbs.db
-=======
 # --- 공통 및 보안 ---
 .env
 .env.*
@@ -23,6 +8,7 @@ firebase-adminsdk.json
 !package.json
 !package-lock.json
 !**/config.json
+!**/swagger-output.json
 
 # --- Mac/Windows 시스템 파일 ---
 .DS_Store
@@ -36,4 +22,3 @@ yarn-error.log*
 # fastapi-server.gitignore
 venv/
 __pycach
->>>>>>> cc7618cee76bc2259ea2796180f1e1c55eae24f8
