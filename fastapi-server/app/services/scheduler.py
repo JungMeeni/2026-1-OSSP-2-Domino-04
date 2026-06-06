@@ -5,11 +5,9 @@ FastAPI lifespan에 붙는 백그라운드 폴링 스케줄러.
 
 폴링 주기:
   - 재난문자·사고통제·인구·교통: 5분
-  - 날씨: 1시간 (캐시 TTL로 제어)
-  - 문화행사: 24시간 (캐시 TTL로 제어)
 
 서울시 citydata API 한 번 호출에 위 데이터가 모두 포함되므로
-5분마다 전 지역을 순회하되, 날씨·행사는 캐시 미스일 때만 덮어씀.
+5분마다 전 지역을 순회함.
 
 seoul_api.py 연동 후 변경 사항:
   - httpx 직접 호출 제거 → SeoulApiClient.fetch_citydata() 사용
@@ -54,8 +52,6 @@ HOTSPOT_AREAS: list[str] = [
 _INTERVAL_CITYDATA = 300    # 5분
 _TTL_POPULATION    = 300    # 5분
 _TTL_TRAFFIC       = 300    # 5분
-_TTL_WEATHER       = 3600   # 1시간
-_TTL_EVENT         = 86400  # 24시간
 _CONCURRENCY       = 10     # 동시 API 호출 상한 (rate limit 방어)
 _MAX_BACKOFF       = 1800   # 연속 실패 시 최대 대기 30분
 
@@ -86,8 +82,6 @@ class Scheduler:
         self._sem        = asyncio.Semaphore(_CONCURRENCY)
         self._count_lock = asyncio.Lock()
         self._api_call_count    = 0
-        self._weather_set_count  = 0   # 날씨 캐시 미스 → 실제 SET 횟수
-        self._weather_skip_count = 0   # 날씨 캐시 히트 → SET 생략 횟수
 
     # ── lifespan 훅 ──────────────────────────────
 
@@ -108,9 +102,7 @@ class Scheduler:
                 name="scheduler-ttl",
             ),
         ]
-        logger.info(
-            "[Scheduler] 시작 — 재난·인구·교통 5분, 날씨 1시간, 행사 24시간 주기 | TTL 추적 활성화"
-        )
+        logger.info("[Scheduler] 시작 — 재난·인구·교통 5분 주기 | TTL 추적 활성화")
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -185,7 +177,6 @@ class Scheduler:
             self._route_accident(data),
             self._route_population(data),
             self._route_traffic(data),
-            self._route_weather(data),
         )
 
     async def _route_disaster(self, data: CityData) -> None:
@@ -223,21 +214,6 @@ class Scheduler:
             ttl=_TTL_TRAFFIC,
         )
 
-    async def _route_weather(self, data: CityData) -> None:
-        """날씨 → 캐시 미스일 때만 저장 (1시간 TTL)"""
-        if not data.weather:
-            return
-        key = f"weather:{data.area_nm}"
-        if await self._cache.get(key) is not None:
-            self._weather_skip_count += 1   # 히트 — SET 생략
-            return
-        await self._cache.set(
-            key,
-            dataclasses.asdict(data.weather),
-            ttl=_TTL_WEATHER,
-        )
-        self._weather_set_count += 1        # 미스 — 실제 SET 발생
-
     # ── 공개 속성 ─────────────────────────────────
 
     def register_disaster_ttl(
@@ -261,16 +237,6 @@ class Scheduler:
     @property
     def ttl_active_count(self) -> int:
         return self._ttl_tracker.active_count
-
-    @property
-    def weather_set_count(self) -> int:
-        """날씨 캐시 미스로 Redis SET이 실제 발생한 누적 횟수"""
-        return self._weather_set_count
-
-    @property
-    def weather_skip_count(self) -> int:
-        """날씨 캐시 히트로 Redis SET을 생략한 누적 횟수"""
-        return self._weather_skip_count
 
 
 # 싱글턴 — main.py에서 import해서 lifespan에 연결

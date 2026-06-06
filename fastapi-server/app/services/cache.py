@@ -61,8 +61,6 @@ TTL_BY_PREFIX: dict[str, int | None] = {
     "accident:" : None,    # 사고통제 이력 — 절대 만료시키지 않음
     "traffic:"  : 300,     # 교통 — 5분
     "population": 300,     # 인구 혼잡도 — 5분
-    "weather:"  : 3600,    # 날씨 — 1시간
-    "event:"    : 86400,   # 문화행사 — 24시간
 }
 
 DEFAULT_TTL = 300  # 위 목록에 없는 키의 기본값

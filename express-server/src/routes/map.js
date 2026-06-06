@@ -6,6 +6,42 @@ const { calculateRoute } = require('../services/FastAPI_Service');
 const FASTAPI_URL = process.env.FASTAPI_URL || 'http://fastapi:8000';
 
 // =========================================================================
+// TripAdvisor 캐시 + 요청 큐 (429 방지)
+// - detailsCache: locationId → { data, expiresAt } 인메모리 캐시 (1시간 TTL)
+// - taQueue: TripAdvisor로 나가는 요청을 300ms 간격으로 직렬화
+// =========================================================================
+const CACHE_TTL_MS   = 60 * 60 * 1000; // 1시간
+const TA_INTERVAL_MS = 300;             // TripAdvisor 호출 사이 최소 간격
+
+const detailsCache = new Map();
+
+const taQueue = {
+    _queue: [],
+    _running: false,
+    _lastCall: 0,
+
+    enqueue(fn) {
+        return new Promise((resolve, reject) => {
+            this._queue.push({ fn, resolve, reject });
+            this._drain();
+        });
+    },
+
+    async _drain() {
+        if (this._running) return;
+        this._running = true;
+        while (this._queue.length > 0) {
+            const wait = Math.max(0, this._lastCall + TA_INTERVAL_MS - Date.now());
+            if (wait > 0) await new Promise(r => setTimeout(r, wait));
+            const { fn, resolve, reject } = this._queue.shift();
+            this._lastCall = Date.now();
+            try { resolve(await fn()); } catch (e) { reject(e); }
+        }
+        this._running = false;
+    },
+};
+
+// =========================================================================
 // 1. Tripadvisor location_id 조회
 // GET /api/tripadvisor/search
 // =========================================================================
@@ -46,28 +82,34 @@ router.get('/tripadvisor/search', async (req, res) => {
 // =========================================================================
 
 router.get('/tripadvisor/details/:locationId', async (req, res) => {
+    const { locationId } = req.params;
+
+    if (!locationId || locationId === 'undefined' || locationId === 'null') {
+        return res.status(400).json({ error: '유효하지 않은 locationId 입니다.' });
+    }
+
+    // 캐시 히트
+    const cached = detailsCache.get(locationId);
+    if (cached && cached.expiresAt > Date.now()) {
+        return res.json(cached.data);
+    }
+
     try {
-        const { locationId } = req.params;
+        const data = await taQueue.enqueue(() =>
+            axios.get(`https://api.content.tripadvisor.com/api/v1/location/${locationId}/details`, {
+                params: { language: 'ko', key: process.env.TRIPADVISOR_API_KEY },
+                headers: {
+                    'Referer': 'https://idfriend.kr',
+                    'Origin':  'https://idfriend.kr',
+                    'accept':  'application/json'
+                }
+            }).then(r => r.data)
+        );
 
-        if (!locationId || locationId === 'undefined' || locationId === 'null') {
-            return res.status(400).json({ error: '유효하지 않은 locationId 입니다.' });
-        }
-
-        const response = await axios.get(`https://api.content.tripadvisor.com/api/v1/location/${locationId}/details`, {
-            params: {
-                language: 'ko',
-                key: process.env.TRIPADVISOR_API_KEY
-            },
-            headers: {
-                'Referer': 'https://idfriend.kr',
-                'Origin':  'https://idfriend.kr',
-                'accept':  'application/json'
-            }
-        });
-
-        res.json(response.data);
+        detailsCache.set(locationId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+        res.json(data);
     } catch (error) {
-        console.error(`🚨 Tripadvisor 장소 상세 에러 (ID: ${req.params.locationId}):`, error.response?.data || error.message);
+        console.error(`🚨 Tripadvisor 장소 상세 에러 (ID: ${locationId}):`, error.response?.data || error.message);
         const statusCode = error.response?.status || 500;
         res.status(statusCode).json(error.response?.data || { error: '장소 상세 정보를 불러오는데 실패했습니다.' });
     }

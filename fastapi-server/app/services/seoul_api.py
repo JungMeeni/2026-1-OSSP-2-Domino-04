@@ -11,8 +11,6 @@ services/seoul_api.py
             "LIVE_DST_MESSAGE": [ { ...5개 필드... } ],
             "ACDNT_CNTRL_STTS": [ { ...9개 필드... } ],
             "ROAD_TRAFFIC_STTS": [ { ...17개 필드... } ],
-            "WEATHER_STTS": [ { ...39개 필드... } ],
-            "EVENT_STTS": [ { ... } ],
             ...
         }
     }
@@ -100,20 +98,6 @@ class TrafficInfo:
 
 
 @dataclass
-class WeatherInfo:
-    """WEATHER_STTS 파싱 결과"""
-    area_nm: str
-    temp: float             # 기온 (°C)
-    sensible_temp: float    # 체감 온도
-    humidity: int           # 습도 (%)
-    wind_spd: float         # 풍속 (m/s)
-    precipitation: str      # 강수 형태: 없음/비/눈/진눈깨비
-    uv_index_lvl: str       # 자외선 등급
-    pm25_index: str         # 초미세먼지 등급
-    weather_time: str       # 데이터 기준 시각
-
-
-@dataclass
 class CityData:
     """
     fetch_citydata() 반환 타입.
@@ -125,7 +109,6 @@ class CityData:
     disasters: list[DisasterMessage] = field(default_factory=list)
     accidents: list[AccidentInfo] = field(default_factory=list)
     traffic: list[TrafficInfo] = field(default_factory=list)
-    weather: WeatherInfo | None = None
 
 
 # ──────────────────────────────────────────────
@@ -222,25 +205,6 @@ def _parse_traffic(data: dict | list) -> list[TrafficInfo]:
 
     return []
 
-def _parse_weather(items: list[dict]) -> WeatherInfo | None:
-    """WEATHER_STTS 리스트에서 첫 번째 항목을 파싱"""
-    if not items:
-        return None
-    d = items[0] if isinstance(items, list) else items
-
-    return WeatherInfo(
-        area_nm=d.get("AREA_NM", ""),
-        temp=float(d.get("TEMP", 0) or 0),
-        sensible_temp=float(d.get("SENSIBLE_TEMP", 0) or 0),
-        humidity=int(d.get("HUMIDITY", 0) or 0),
-        wind_spd=float(d.get("WIND_SPD", 0) or 0),
-        precipitation=d.get("PRECIPITATION", "없음"),
-        uv_index_lvl=d.get("UV_INDEX_LVL", ""),
-        pm25_index=d.get("PM25_INDEX", ""),
-        weather_time=d.get("WEATHER_TIME", ""),
-    )
-
-
 # ──────────────────────────────────────────────
 # API 클라이언트
 # ──────────────────────────────────────────────
@@ -316,9 +280,6 @@ class SeoulApiClient:
             ),
             traffic=_parse_traffic(
                 citydata.get("ROAD_TRAFFIC_STTS") or []
-            ),
-            weather=_parse_weather(
-                citydata.get("WEATHER_STTS", [])
             ),
         )
 
