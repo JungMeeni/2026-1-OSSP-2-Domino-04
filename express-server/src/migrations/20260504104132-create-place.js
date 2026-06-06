@@ -40,7 +40,7 @@ module.exports = {
       },
       coordinates: {
         type: Sequelize.GEOMETRY('POINT', 4326),
-        allowNull: false
+        allowNull: true
       },
       rating: {
         type: Sequelize.DECIMAL(3, 2)
@@ -50,6 +50,10 @@ module.exports = {
       },
       cached_at: {
         type: Sequelize.DATE
+      },
+      raw_data: {
+        type: Sequelize.JSON,
+        allowNull: true
       },
       createdAt: {
         allowNull: false,
