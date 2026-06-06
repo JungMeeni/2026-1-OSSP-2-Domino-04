@@ -14,7 +14,7 @@ const FASTAPI_URL = process.env.FASTAPI_URL || 'http://fastapi:8000';
 // =========================================================================
 const DETAILS_TTL_MS      = 24 * 60 * 60 * 1000; // 24시간 (DB 캐시)
 const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000;       // 30분 (인메모리)
-const TA_INTERVAL_MS      = 500;                   // TripAdvisor 호출 사이 최소 간격
+const TA_INTERVAL_MS      = 200;                   // TripAdvisor 호출 사이 최소 간격
 
 const searchCache = new Map();
 
