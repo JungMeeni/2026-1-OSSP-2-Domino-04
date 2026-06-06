@@ -143,7 +143,7 @@ async function _saveToDb(locationId, data) {
 
     // +lng / +lat : parseFloat 결과를 다시 숫자로 강제 — SQL 인젝션 방지
     const coordExpr = hasCoords
-        ? `ST_GeomFromText('POINT(${+lng} ${+lat})', 4326)`
+        ? `ST_GeomFromText('POINT(${+lat} ${+lng})', 4326)`
         : 'NULL';
 
     await sequelize.query(
