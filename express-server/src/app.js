@@ -60,7 +60,17 @@ app.use(cors({
 // 1-2. Rate Limit 설정 (악의적인 매크로/봇 방어)
 const apiLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1분 동안
-  max: 60,                  // 동일 IP에서 최대 60번 요청 허용
+  max: 200,                 // 동일 IP에서 최대 200번 요청 허용
+  message: {
+    success: false,
+    message: '요청이 너무 많습니다. 1분 후에 다시 시도해 주세요.'
+  }
+});
+
+// TripAdvisor 전용: POI 30개 × 조회 수 고려해 더 넉넉하게 허용
+const taLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1분 동안
+  max: 300,                 // 동일 IP에서 최대 300번
   message: {
     success: false,
     message: '요청이 너무 많습니다. 1분 후에 다시 시도해 주세요.'
@@ -68,6 +78,7 @@ const apiLimiter = rateLimit({
 });
 
 // 모든 /api 경로에 방어막(Rate Limit) 우선 적용
+app.use('/api/tripadvisor', taLimiter);
 app.use('/api', apiLimiter);
 app.use(express.json()); // JSON Payload 파싱
 app.use(express.urlencoded({ extended: true })); // URL-encoded Payload 파싱

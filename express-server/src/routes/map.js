@@ -10,10 +10,12 @@ const FASTAPI_URL = process.env.FASTAPI_URL || 'http://fastapi:8000';
 // - detailsCache: locationId → { data, expiresAt } 인메모리 캐시 (1시간 TTL)
 // - taQueue: TripAdvisor로 나가는 요청을 300ms 간격으로 직렬화
 // =========================================================================
-const CACHE_TTL_MS   = 60 * 60 * 1000; // 1시간
-const TA_INTERVAL_MS = 300;             // TripAdvisor 호출 사이 최소 간격
+const CACHE_TTL_MS        = 60 * 60 * 1000; // 1시간 (details)
+const SEARCH_CACHE_TTL_MS = 30 * 60 * 1000; // 30분 (search)
+const TA_INTERVAL_MS      = 500;             // TripAdvisor 호출 사이 최소 간격
 
 const detailsCache = new Map();
+const searchCache  = new Map();
 
 const taQueue = {
     _queue: [],
@@ -47,28 +49,32 @@ const taQueue = {
 // =========================================================================
 
 router.get('/tripadvisor/search', async (req, res) => {
+    const { searchQuery, latLong } = req.query;
+
+    if (!searchQuery || !latLong) {
+        return res.status(400).json({ error: 'searchQuery와 latLong 파라미터는 필수입니다.' });
+    }
+
+    const cacheKey = `${searchQuery}:${latLong}`;
+    const cached = searchCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+        return res.json(cached.data);
+    }
+
     try {
-        const { searchQuery, latLong } = req.query;
+        const data = await taQueue.enqueue(() =>
+            axios.get('https://api.content.tripadvisor.com/api/v1/location/search', {
+                params: { searchQuery, latLong, language: 'ko', key: process.env.TRIPADVISOR_API_KEY },
+                headers: {
+                    'Referer': 'https://idfriend.kr',
+                    'Origin':  'https://idfriend.kr',
+                    'accept':  'application/json'
+                }
+            }).then(r => r.data)
+        );
 
-        if (!searchQuery || !latLong) {
-            return res.status(400).json({ error: 'searchQuery와 latLong 파라미터는 필수입니다.' });
-        }
-
-        const response = await axios.get('https://api.content.tripadvisor.com/api/v1/location/search', {
-            params: {
-                searchQuery,
-                latLong,
-                language: 'ko',
-                key: process.env.TRIPADVISOR_API_KEY
-            },
-            headers: {
-                'Referer': 'https://idfriend.kr',
-                'Origin':  'https://idfriend.kr',
-                'accept':  'application/json'
-            }
-        });
-
-        res.json(response.data);
+        searchCache.set(cacheKey, { data, expiresAt: Date.now() + SEARCH_CACHE_TTL_MS });
+        res.json(data);
     } catch (error) {
         console.error('🚨 Tripadvisor 장소 검색 에러:', error);
         const statusCode = error.response?.status || 500;
