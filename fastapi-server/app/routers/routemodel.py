@@ -83,12 +83,22 @@ class PlaceInput(BaseModel):
     web_url: str = ""
 
 
+class DisasterZone(BaseModel):
+    """재난 회피 구역 (원형 영역: 중심 좌표 + 반경)."""
+    lat:      float
+    lng:      float
+    radius_m: float = 2000.0
+
+
 class RouteRequest(BaseModel):
     user_lat: float
     user_lng: float
-    places: list[PlaceInput]
-    dest_lat: Optional[float] = None   # 직접 입력 탭: 도착지 위도
-    dest_lng: Optional[float] = None   # 직접 입력 탭: 도착지 경도
+    places:         list[PlaceInput]
+    dest_lat:       Optional[float] = None
+    dest_lng:       Optional[float] = None
+    disaster_zones: list[DisasterZone] = []
+    # 재난구역 제거 시 보충용 예비 장소 (PER_CAT 초과분, TA 평점 없이 전송)
+    extra_places:   list[PlaceInput]  = []
 
 
 class PlaceOutput(BaseModel):
@@ -169,6 +179,25 @@ def is_blacklisted(name: str) -> bool:
         if kw in name:
             return True
     return False
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """두 지점 사이의 거리를 미터 단위로 반환 (Haversine 공식)."""
+    R = 6_371_000
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (math.sin(d_lat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(d_lng / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def is_in_any_disaster_zone(place: PlaceInput, zones: list) -> bool:
+    """장소가 하나 이상의 재난 구역 안에 있으면 True 반환."""
+    return any(
+        _haversine_m(place.lat, place.lng, z.lat, z.lng) < z.radius_m
+        for z in zones
+    )
 
 
 # ══════════════════════════════════════════════════════════
@@ -817,6 +846,37 @@ async def recommend_routes(req: RouteRequest) -> RouteResponse:
     if removed:
         removed_names = [p.name for p in req.places if is_blacklisted(p.name)]
         logger.debug("[RECOMMEND] 제거된 장소: %s", removed_names)
+
+    # 재난 구역 내 장소 제거 (우회 경로 탐색 시 전달됨)
+    removed_by_zone = 0
+    if req.disaster_zones:
+        before_zone = len(filtered)
+        filtered = [p for p in filtered if not is_in_any_disaster_zone(p, req.disaster_zones)]
+        removed_by_zone = before_zone - len(filtered)
+        if removed_by_zone:
+            logger.info(
+                "[RECOMMEND] 재난구역 제거=%d  잔여=%d  (zones=%d)",
+                removed_by_zone, len(filtered), len(req.disaster_zones),
+            )
+
+    # 재난구역 제거 보완: extra_places에서 유효 장소를 보충 (사라진 수만큼)
+    if removed_by_zone > 0 and req.extra_places:
+        existing_ids = {p.id for p in filtered}
+        valid_extras = [
+            p for p in req.extra_places
+            if not is_blacklisted(p.name)
+            and p.id not in existing_ids
+            and not is_in_any_disaster_zone(p, req.disaster_zones)
+        ]
+        # 카카오 평점(rating) 높은 순으로 정렬 후 제거된 수만큼 보충
+        valid_extras.sort(key=lambda p: p.rating, reverse=True)
+        to_add = valid_extras[:removed_by_zone]
+        if to_add:
+            filtered.extend(to_add)
+            logger.info(
+                "[RECOMMEND] 예비 장소 보충=%d/%d  (재난구역 보완)",
+                len(to_add), removed_by_zone,
+            )
 
     if not filtered:
         logger.warning("[RECOMMEND] 필터링 후 장소 없음 → 빈 응답 반환")
