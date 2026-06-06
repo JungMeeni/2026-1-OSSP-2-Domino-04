@@ -128,4 +128,42 @@ router.post('/route/recommend', async (req, res) => {
     }
 });
 
+// =========================================================================
+// 5. ML 피드백 — MLP 가중치 온라인 학습
+// POST /api/route/recommend/feedback
+// =========================================================================
+
+router.post('/route/recommend/feedback', async (req, res) => {
+    try {
+        const response = await axios.post(`${FASTAPI_URL}/route/recommend/feedback`, req.body, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 15000,
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('🚨 ML 피드백 오류:', error);
+        const statusCode = error.response?.status || 500;
+        res.status(statusCode).json(error.response?.data || { error: 'ML 피드백 처리에 실패했습니다.' });
+    }
+});
+
+// =========================================================================
+// 6. 카테고리 가중치 피드백 — 맞춤 코스 EMA 갱신
+// POST /api/route/feedback
+// =========================================================================
+
+router.post('/route/feedback', async (req, res) => {
+    try {
+        const response = await axios.post(`${FASTAPI_URL}/route/feedback`, req.body, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 10000,
+        });
+        res.json(response.data);
+    } catch (error) {
+        console.error('🚨 카테고리 가중치 피드백 오류:', error);
+        const statusCode = error.response?.status || 500;
+        res.status(statusCode).json(error.response?.data || { error: '가중치 피드백 처리에 실패했습니다.' });
+    }
+});
+
 module.exports = router;

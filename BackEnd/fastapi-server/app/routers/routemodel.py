@@ -48,6 +48,7 @@ except ImportError:
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from app.routers.route import load_category_weights
 
 import logging
 
@@ -729,7 +730,45 @@ def select_balanced(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["id"].isin(selected_ids)]
 
 
+def select_personalized(df: pd.DataFrame) -> pd.DataFrame:
+    """학습된 카테고리 가중치 기반 맞춤 선택.
+    가중치가 높은 카테고리에서 우선 슬롯을 배정하고, 나머지는 점수 순으로 채운다."""
+    weights = load_category_weights()
+    # 가중치 내림차순으로 카테고리 우선순위 결정
+    priority_cats = sorted(weights.keys(), key=lambda c: weights[c], reverse=True)
+
+    df = df.copy()
+    df["efficiency"] = df["final_score"] - df["distance_m"] / 600.0
+    selected_ids: list[str] = []
+
+    # 상위 가중치 카테고리부터 각 1슬롯씩 우선 배정
+    for cat in priority_cats:
+        if len(selected_ids) >= MAX_PLACES:
+            break
+        best = df[df["category"] == cat].sort_values("efficiency", ascending=False)
+        if not best.empty:
+            selected_ids.append(best.iloc[0]["id"])
+
+    # 남은 슬롯을 점수 순으로 채움
+    by_eff = df.sort_values("efficiency", ascending=False)
+    for _, row in by_eff.iterrows():
+        if len(selected_ids) >= MAX_PLACES:
+            break
+        if row["id"] not in selected_ids:
+            selected_ids.append(row["id"])
+
+    return df[df["id"].isin(selected_ids)]
+
+
 COURSES = [
+    {
+        "route_id":      3,
+        "label":         "맞춤 코스",
+        "description":   "선택 이력 기반 카테고리 맞춤 추천",
+        "emoji":         "⭐",
+        "compute_score": lambda p: compute_place_score(p, _model_C, load_category_weights()),
+        "select_fn":     select_personalized,
+    },
     {
         "route_id":      0,
         "label":         "명소 탐방",

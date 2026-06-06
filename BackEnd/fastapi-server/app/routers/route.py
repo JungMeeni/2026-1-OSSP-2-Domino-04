@@ -17,31 +17,31 @@ router = APIRouter(tags=["Route"])
 EARTH_RADIUS_M = 6_371_000
 VERTEX_SAMPLE_STEP = 3
 
-_WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "category_weights.json")
-_DEFAULT_WEIGHTS: Dict[str, float] = {
+WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "category_weights.json")
+DEFAULT_WEIGHTS: Dict[str, float] = {
     "명소": 1.4, "식당": 1.4, "문화": 1.3, "공원": 1.2, "카페": 1.1, "갤러리": 1.1, "거리": 1.0,
 }
 _LEARNING_RATE = 0.05
 
 
 # ---------------------------------------------------------------------------
-# Weight persistence
+# Weight persistence (카테고리 가중치 — 맞춤 코스용)
 # ---------------------------------------------------------------------------
 
-def _load_weights() -> Dict[str, float]:
+def load_category_weights() -> Dict[str, float]:
     try:
-        if os.path.exists(_WEIGHTS_FILE):
-            with open(_WEIGHTS_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(WEIGHTS_FILE):
+            with open(WEIGHTS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return {k: float(data.get(k, v)) for k, v in _DEFAULT_WEIGHTS.items()}
+            return {k: float(data.get(k, v)) for k, v in DEFAULT_WEIGHTS.items()}
     except Exception:
         pass
-    return _DEFAULT_WEIGHTS.copy()
+    return DEFAULT_WEIGHTS.copy()
 
 
 def _save_weights(weights: Dict[str, float]) -> None:
-    os.makedirs(os.path.dirname(_WEIGHTS_FILE), exist_ok=True)
-    with open(_WEIGHTS_FILE, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(WEIGHTS_FILE), exist_ok=True)
+    with open(WEIGHTS_FILE, "w", encoding="utf-8") as f:
         json.dump(weights, f, ensure_ascii=False, indent=2)
 
 
@@ -54,7 +54,7 @@ def _update_weights(weights: Dict[str, float], selected_categories: List[str]) -
         else:
             new_weights[cat] = w * (1.0 - _LEARNING_RATE * 0.3)
 
-    base_sum = sum(_DEFAULT_WEIGHTS.values())
+    base_sum = sum(DEFAULT_WEIGHTS.values())
     cur_sum = sum(new_weights.values())
     ratio = base_sum / cur_sum if cur_sum > 0 else 1.0
     return {cat: round(v * ratio, 4) for cat, v in new_weights.items()}
@@ -114,23 +114,16 @@ class RouteCalculateRequest(BaseModel):
 
 class RouteFeedbackRequest(BaseModel):
     selected_categories: List[str]
-    route_type: str = ""
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/weights")
-def get_weights():
-    """현재 카테고리 추천 가중치 반환"""
-    return _load_weights()
-
-
 @router.post("/feedback")
 def update_weights_from_feedback(request: RouteFeedbackRequest):
-    """사용자가 선택한 경로의 카테고리 기반으로 가중치 업데이트."""
-    weights = _load_weights()
+    """사용자가 선택한 코스의 카테고리로 맞춤 코스 가중치를 EMA 갱신."""
+    weights = load_category_weights()
     updated = _update_weights(weights, request.selected_categories)
     _save_weights(updated)
     return {"updated_weights": updated}
