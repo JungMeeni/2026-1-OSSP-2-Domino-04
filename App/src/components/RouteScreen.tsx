@@ -580,7 +580,20 @@ const RouteScreen: FC = () => {
 
   const handlePreviewDetour = useCallback((detour: RecommendedRoute | null) => {
     clearMapLayers();
-    if (!detour || !pendingNavRoute || !kakaoMapRef.current || !isMapReady) return;
+    if (!kakaoMapRef.current || !isMapReady) return;
+
+    // detour = null: 비교 창 닫기/뒤로 가기 시 원본 경로 복원
+    if (!detour) {
+      if (pendingNavRoute && pendingNavRoute.roads.length > 0) {
+        const isManual = pendingNavCtx?.type === 'manual';
+        const waypoints = (isManual ? pendingNavRoute.places : pendingNavRoute.places.slice(0, -1))
+          .map(p => ({ lat: p.lat, lng: p.lng, name: p.name }));
+        drawOnMap(pendingNavRoute.roads, waypoints, kakaoMapRef, polylineListRef, overlayListRef);
+      }
+      return;
+    }
+
+    if (!pendingNavRoute) return;
     const map = kakaoMapRef.current;
 
     const drawRoute = (roads: RecommendedRoute["roads"], color: string, style: string) => {
@@ -616,7 +629,7 @@ const RouteScreen: FC = () => {
         bounds.extend(new window.kakao.maps.LatLng(road.vertexes[i + 1], road.vertexes[i]));
     });
     map.setBounds(bounds, 60, 60, 60, 520);
-  }, [clearMapLayers, pendingNavRoute, kakaoMapRef, isMapReady, polylineListRef, overlayListRef]);
+  }, [clearMapLayers, pendingNavRoute, pendingNavCtx, kakaoMapRef, isMapReady, polylineListRef, overlayListRef]);
 
   const handleMoveToCurrentLoc = useCallback(() => {
     if (!kakaoMapRef.current || !isMapReady) return;
@@ -624,9 +637,18 @@ const RouteScreen: FC = () => {
   }, [userLat, userLng, isMapReady]);
 
   const handleMenuSelect = useCallback((tab: Tab) => {
-    if (tab !== activeTab) clearMapLayers();
+    if (tab !== activeTab) {
+      clearMapLayers();
+      if (isNavigating) {
+        setIsNavigating(false);
+        setNavRoute(null);
+        setNavIsRecommend(false);
+        setDetourDisasterZones([]);
+        setDetourCategoryBias(undefined);
+      }
+    }
     setActiveTab(tab);
-  }, [activeTab, clearMapLayers]);
+  }, [activeTab, clearMapLayers, isNavigating]);
 
   const handleStartNavigation = useCallback((route: RecommendedRoute, ctx: NavRouteCtx) => {
     const originLat = ctx.type === 'manual' ? ctx.origin.lat : userLat;
@@ -732,7 +754,7 @@ const RouteScreen: FC = () => {
         setDetourManualLoading(false);
       }
     } else {
-      setDetourCategoryBias(dominantCat ? { [dominantCat]: 2 } : undefined);
+      setDetourCategoryBias(dominantCat ? { [dominantCat]: 5 } : undefined);
       recRefetch();
     }
   }, [activeAlerts, pendingNavCtx, pendingNavRoute, recRefetch]);

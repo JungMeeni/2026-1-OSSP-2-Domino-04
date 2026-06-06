@@ -14,7 +14,18 @@ import type { Place, Category, RouteResult, DirectionsResponse } from "../types/
 
 // ── [CONFIG] ──────────────────────────────────────────────
 
-const SEARCH_RADIUS = 2000;
+const SEARCH_RADIUS         = 2000;
+const SEARCH_RADIUS_DETOUR  = 3500; // 우회 탐색 시 더 넓은 범위 탐색
+
+// ── [UTIL] ────────────────────────────────────────────────
+
+const _haversineM = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const R = 6371000;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const dφ = (lat2 - lat1) * Math.PI / 180, dλ = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(dλ / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
 
 const ALL_KAKAO_CATS: { code: string; category: Category }[] = [
   { code: "AT4", category: "명소" },
@@ -271,6 +282,9 @@ export const useRecommendedRoute = ({
     const ps     = new (window.kakao.maps.services as any).Places();
     const center = new window.kakao.maps.LatLng(userLat, userLng);
 
+    // 우회 탐색 시 반경을 확대해 재난 구역 외부에서 더 많은 장소 수집
+    const searchRadius = disasterZones?.length ? SEARCH_RADIUS_DETOUR : SEARCH_RADIUS;
+
     // ── Step 1: 카카오 카테고리 검색 (5종 병렬)
     let completed = 0;
     const rawPlaces: { item: KakaoPlaceItem; category: Category }[] = [];
@@ -283,7 +297,7 @@ export const useRecommendedRoute = ({
           if (status === (window.kakao.maps.services as any).Status.OK) {
             result.forEach(item => {
               const dist = parseInt(item.distance, 10);
-              if (!seenIds.has(item.id) && dist <= SEARCH_RADIUS) {
+              if (!seenIds.has(item.id) && dist <= searchRadius) {
                 seenIds.add(item.id);
                 rawPlaces.push({ item, category });
               }
@@ -291,10 +305,18 @@ export const useRecommendedRoute = ({
           }
           if (completed === ALL_KAKAO_CATS.length) {
             if (rawPlaces.length === 0) { setError("주변에 추천할 장소가 없어요"); setIsLoading(false); return; }
-            buildRoutes(rawPlaces);
+            // 재난 구역 내 장소를 후보에서 사전 제거 → 해당 슬롯을 구역 외 장소가 채워
+            // preferredCategory(코스 유형) 장소를 더 많이 확보
+            const safePlaces = disasterZones?.length
+              ? rawPlaces.filter(({ item }) => {
+                  const lat = parseFloat(item.y), lng = parseFloat(item.x);
+                  return !disasterZones.some(z => _haversineM(lat, lng, z.lat, z.lng) <= z.radius_m);
+                })
+              : rawPlaces;
+            buildRoutes(safePlaces.length > 0 ? safePlaces : rawPlaces);
           }
         }
-      }, { location: center, radius: SEARCH_RADIUS, sort: "distance" });
+      }, { location: center, radius: searchRadius, sort: "distance" });
     });
 
     // ── Step 2~3: TripAdvisor 평점 보강 → 백엔드 ML 추천 → Directions 호출
@@ -310,8 +332,15 @@ export const useRecommendedRoute = ({
       }
       const candidates: { item: KakaoPlaceItem; category: Category }[] = [];
       const reserveItems: { item: KakaoPlaceItem; category: Category }[] = [];
+      // categoryBias가 지정된 경우: dominant 카테고리를 5배 확대 + 나머지를 40%로 축소
+      // → 후보 풀의 ~70%를 dominant 카테고리로 채워 ML 모델이 해당 유형 장소를 확실히 선택하도록 강제
+      const hasBias = categoryBias && Object.keys(categoryBias).length > 0;
       for (const [cat, arr] of byCat) {
-        const limit = Math.round(PER_CAT * (categoryBias?.[cat] ?? 1));
+        const limit = hasBias
+          ? (categoryBias![cat]
+              ? Math.round(PER_CAT * categoryBias![cat]!)
+              : Math.max(1, Math.round(PER_CAT * 0.4)))
+          : PER_CAT;
         candidates.push(...arr.slice(0, limit));
         reserveItems.push(...arr.slice(limit));
       }
@@ -470,7 +499,9 @@ export const useRecommendedRoute = ({
         .map(r => (r as PromiseFulfilledResult<RecommendedRoute>).value)
         .filter(r => r.roads.length > 0);
 
-      if (built.length > 0) sessionStorage.setItem(cacheKey, JSON.stringify(built));
+      // 재난구역 우회 탐색 시에는 캐시를 덮어쓰지 않음 — 우회 경로가 원본 경로 캐시를 오염시키면
+      // 안내 시작 후 재난구역 해제 시 원본 경로 대신 우회 경로가 캐시에서 반환되는 버그 발생
+      if (built.length > 0 && !disasterZones?.length) sessionStorage.setItem(cacheKey, JSON.stringify(built));
       setRoutes(built);
       setIsLoading(false);
     };

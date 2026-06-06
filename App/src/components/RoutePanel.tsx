@@ -433,10 +433,13 @@ export const buildManualRoutes = async (
   // ── Step 1: 출발↔도착 중간 지점 기준 카카오 검색
   const midLat = (origin.lat + dest.lat) / 2;
   const midLng = (origin.lng + dest.lng) / 2;
-  const radius = Math.min(
+  // 우회 탐색 시 반경 1.5배 확대 → 재난 구역 외부에서 더 많은 장소 수집
+  const baseRadius = Math.min(
     Math.round(Math.hypot(origin.lat - dest.lat, origin.lng - dest.lng) * 111000 / 2),
     4000,
   );
+  const radius = disasterZones?.length ? Math.min(Math.round(baseRadius * 1.5), 6000) : baseRadius;
+
   const ps     = new (window.kakao.maps.services as any).Places();
   const center = new window.kakao.maps.LatLng(midLat, midLng);
   const rawPlaces: { item: KakaoPlaceItem; category: Category }[] = [];
@@ -457,20 +460,30 @@ export const buildManualRoutes = async (
 
   if (rawPlaces.length === 0) return [];
 
+  // 재난 구역 내 장소를 후보에서 사전 제거 → 해당 슬롯을 구역 외 장소가 채워
+  // preferredCategory(코스 유형) 장소를 더 많이 확보
+  const safeRaw = disasterZones?.length
+    ? rawPlaces.filter(({ item }) => {
+        const lat = parseFloat(item.y), lng = parseFloat(item.x);
+        return !disasterZones.some(z => _haversine(lat, lng, z.lat, z.lng) <= z.radius_m);
+      })
+    : rawPlaces;
+  const basePlaces = safeRaw.length > 0 ? safeRaw : rawPlaces;
+
   // 경로 이탈 필터: 출발↔도착 직선에서 너무 벗어난 장소는 제외해 크게 빙 도는 경로 방지
   const directDist = _haversine(origin.lat, origin.lng, dest.lat, dest.lng);
   const filteredPlaces = directDist > 500
     ? (() => {
         const maxPerpDist = Math.min(directDist * 0.45, 2500);
-        const filtered = rawPlaces.filter(({ item }) =>
+        const filtered = basePlaces.filter(({ item }) =>
           _perpDistToSegment(
             parseFloat(item.y), parseFloat(item.x),
             origin.lat, origin.lng, dest.lat, dest.lng,
           ) <= maxPerpDist
         );
-        return filtered.length > 0 ? filtered : rawPlaces;
+        return filtered.length > 0 ? filtered : basePlaces;
       })()
-    : rawPlaces;
+    : basePlaces;
 
   // ── Step 2: Tripadvisor 평점 보강 (localStorage 7일 캐시 적용)
   // 추천 탭(Userecommendedroute.ts)과 동일한 ta_${id} 캐시 키를 공유하므로
@@ -492,7 +505,8 @@ export const buildManualRoutes = async (
   };
 
   // 카테고리별 균등 샘플링 (단순 slice로는 빠른 카테고리가 입력을 독점하는 문제 방지)
-  // preferredCategory가 지정되면 해당 카테고리의 샘플 한도를 2배로 늘려 코스 유형 유지
+  // preferredCategory가 지정되면: 해당 카테고리 5배 확대 + 나머지 40%로 축소
+  // → 후보 풀의 ~75%를 preferredCategory로 채워 ML 모델이 코스 유형을 유지하도록 강제
   const PER_CAT = 6;
   const byCatMap = new Map<Category, typeof filteredPlaces>();
   for (const raw of filteredPlaces) {
@@ -503,7 +517,9 @@ export const buildManualRoutes = async (
   const top: typeof filteredPlaces = [];
   const reserveItems: typeof filteredPlaces = [];
   for (const [cat, arr] of byCatMap) {
-    const limit = (preferredCategory && cat === preferredCategory) ? PER_CAT * 2 : PER_CAT;
+    const limit = preferredCategory
+      ? (cat === preferredCategory ? PER_CAT * 5 : Math.max(1, Math.round(PER_CAT * 0.4)))
+      : PER_CAT;
     top.push(...arr.slice(0, limit));
     reserveItems.push(...arr.slice(limit));
   }
@@ -695,10 +711,14 @@ const RoutePanel: FC<RoutePanelProps> = ({
     setNavWalkingData(null);
   }, [navRoute]);
 
-  // 안내 시작 시 카드 선택 상태 즉시 초기화 — isNavMatch 조건(selectedRouteIdx === null)이
-  // recRoutes 변경 타이밍과 무관하게 보장되어 우회 경로 카드에 navRoute 데이터가 표시됨
+  // 안내 시작 시 카드 선택 상태 즉시 초기화 (추천/직접 입력 탭 공통)
   useEffect(() => {
-    if (isNavigating) setSelectedRouteIdx(null);
+    if (isNavigating) {
+      setSelectedRouteIdx(null);
+      setSelectedManualIdx(null);
+      setManualTransportMode("car");
+      setManualWalkingData(null);
+    }
   }, [isNavigating]);
 
   // 안내 상태·우회 경로 변경 시 추천 탭 마커 갱신; 안내 종료 시 마커 초기화
@@ -879,6 +899,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
 
   // 탭 전환 시 지도 초기화
   const handlePanelTab = (tab: "manual" | "recommend") => {
+    if (isNavigating) onCancelNavigation();
     polylineListRef.current.forEach(p => p.setMap(null));
     overlayListRef.current.forEach(o => o.setMap(null));
     polylineListRef.current = []; overlayListRef.current = [];
@@ -1156,21 +1177,25 @@ const RoutePanel: FC<RoutePanelProps> = ({
 
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {/* 코스 카드 — 선택 시 아코디언으로 결과 + 안내 시작 표시 */}
-                {manualRoutes.map((route, i) => (
+                {manualRoutes.map((route, i) => {
+                  // 직접 입력 우회 경로 안내 중이면 label 일치 카드에 navRoute 데이터 표시
+                  const isManualNavMatch = isNavigating && !navIsRecommend && navRoute?.label === route.label;
+                  const activeManualRoute = isManualNavMatch ? navRoute! : route;
+                  return (
                   <div key={i}>
                     <RouteOptionCard
-                      route={route}
-                      isSelected={selectedManualIdx === i}
-                      onSelect={() => handleSelectManualRoute(i)}
+                      route={isManualNavMatch ? activeManualRoute : route}
+                      isSelected={isManualNavMatch || selectedManualIdx === i}
+                      onSelect={() => !isManualNavMatch && handleSelectManualRoute(i)}
                     />
-                    {selectedManualIdx === i && (
+                    {(isManualNavMatch || selectedManualIdx === i) && (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
                         {/* 이동 수단 토글 */}
                         <div style={{ display: "flex", gap: 6 }}>
                           {(["car", "walk"] as const).map(mode => (
                             <button
                               key={mode}
-                              onClick={() => handleManualTransport(mode, route)}
+                              onClick={() => handleManualTransport(mode, activeManualRoute)}
                               disabled={manualWalkLoading && mode === "walk"}
                               style={{
                                 flex: 1, padding: "8px 0", borderRadius: 10, cursor: "pointer",
@@ -1186,17 +1211,17 @@ const RoutePanel: FC<RoutePanelProps> = ({
                         </div>
                         <RouteResultCard
                           result={{
-                            distanceMeter: manualTransportMode === "car" ? route.totalDistance : (manualWalkingData?.distanceMeter ?? 0),
-                            durationSec:   manualTransportMode === "car" ? route.totalDuration : (manualWalkingData?.durationSec ?? 0),
-                            taxiFare:      manualTransportMode === "car" ? route.taxiFare : 0,
-                            tollFare:      manualTransportMode === "car" ? route.tollFare : 0,
-                            roads:         route.roads,
+                            distanceMeter: manualTransportMode === "car" ? activeManualRoute.totalDistance : (manualWalkingData?.distanceMeter ?? 0),
+                            durationSec:   manualTransportMode === "car" ? activeManualRoute.totalDuration : (manualWalkingData?.durationSec ?? 0),
+                            taxiFare:      manualTransportMode === "car" ? activeManualRoute.taxiFare : 0,
+                            tollFare:      manualTransportMode === "car" ? activeManualRoute.tollFare : 0,
+                            roads:         activeManualRoute.roads,
                           }}
                           origin={routeState.origin?.label ?? "출발"}
                           dest={routeState.destination?.label ?? "도착"}
-                          waypoints={route.places}
+                          waypoints={activeManualRoute.places}
                         />
-                        {isNavigating && navRoute?.label === route.label ? (
+                        {isNavigating && navRoute?.label === activeManualRoute.label ? (
                           <button
                             onClick={onCancelNavigation}
                             style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_DANGER, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
@@ -1206,8 +1231,8 @@ const RoutePanel: FC<RoutePanelProps> = ({
                         ) : (
                           <button
                             onClick={() => {
-                              sendRouteFeedback(route, manualRoutes.filter((_, j) => j !== i));
-                              handleRequestNavigation(route, {
+                              sendRouteFeedback(activeManualRoute, manualRoutes.filter((_, j) => j !== i));
+                              handleRequestNavigation(activeManualRoute, {
                                 type:   'manual',
                                 origin: routeState.origin!,
                                 dest:   routeState.destination!,
@@ -1221,7 +1246,8 @@ const RoutePanel: FC<RoutePanelProps> = ({
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div style={{ padding: "10px 14px", background: COLOR_BG, borderRadius: 10, border: `1px solid ${COLOR_BORDER}` }}>
