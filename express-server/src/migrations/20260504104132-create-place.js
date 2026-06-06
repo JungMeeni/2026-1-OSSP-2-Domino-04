@@ -65,10 +65,6 @@ module.exports = {
       }
     });
 
-    await queryInterface.addIndex('Places', ['coordinates'], {
-      type: 'SPATIAL',
-      name: 'places_coordinates_spatial'
-    });
   },
   async down(queryInterface, Sequelize) {
     await queryInterface.dropTable('Places');
