@@ -48,6 +48,25 @@ const CATEGORY_COLOR: Record<Category, string> = {
   명소: "#1d4ed8", 문화: "#0e7490",  거리: "#be185d", 식당: "#d97706",
 };
 
+const ROUTE_LABEL_EN: Record<string, string> = {
+  "맞춤 코스":   "Custom Course",
+  "명소 탐방":   "Landmarks Tour",
+  "맛집 투어":   "Food Tour",
+  "반나절 코스": "Half-Day Course",
+};
+
+const ROUTE_DESC_EN: Record<string, string> = {
+  "선택 이력 기반 카테고리 맞춤 추천": "Personalized picks based on your selection history",
+  "평점 높은 관광명소·문화시설 집중":  "Top-rated landmarks & cultural venues",
+  "맛집·카페 3곳 + 관광명소 2곳":     "3 restaurants/cafés + 2 sightseeing spots",
+  "카테고리 다양 + 거리 효율 고려":    "Diverse categories with efficient routing",
+};
+
+const ROUTE_BADGE_EN = ["⭐ Custom Course", "🏛 Landmarks Tour", "🍜 Food Tour", "☀️ Half-Day Course"] as const;
+const ROUTE_BADGE_KO = ["⭐ 맞춤 코스",     "🏛 명소 탐방",      "🍜 맛집 투어", "☀️ 반나절 코스"]  as const;
+const TRAFFIC_LABEL_EN = ["Clear", "Slow", "Heavy", "Very Heavy"] as const;
+const TRAFFIC_LABEL_KO = ["원활",  "서행", "정체",  "매우정체"]    as const;
+
 /**
  * TripAdvisor API 요청을 배치 단위로 나눠서 순차 실행한다.
  * 한 번에 너무 많은 요청을 동시에 보내면 429 (Too Many Requests) 에러가 발생하므로,
@@ -130,16 +149,17 @@ const RouteResultCard: FC<{
   origin:    string;
   dest:      string;
   waypoints: { name: string }[];
-}> = ({ result, origin, dest, waypoints }) => (
+  isEn?:     boolean;
+}> = ({ result, origin, dest, waypoints, isEn = false }) => (
   <div style={{ background: COLOR_SURFACE, borderRadius: 14, border: `1.5px solid ${COLOR_PRIMARY}`, overflow: "hidden" }}>
     <div style={{ background: COLOR_PRIMARY_LIGHT, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
       <div>
-        <div style={{ fontSize: 22, fontWeight: 900, color: COLOR_PRIMARY }}>{formatDuration(result.durationSec)}</div>
-        <div style={{ fontSize: 12, color: COLOR_TEXT_SUB, marginTop: 2 }}>총 {formatDistance(result.distanceMeter)}</div>
+        <div style={{ fontSize: 22, fontWeight: 900, color: COLOR_PRIMARY }}>{formatDuration(result.durationSec, isEn)}</div>
+        <div style={{ fontSize: 12, color: COLOR_TEXT_SUB, marginTop: 2 }}>{isEn ? "Total " : "총 "}{formatDistance(result.distanceMeter)}</div>
       </div>
       <div style={{ textAlign: "right" }}>
-        {result.taxiFare > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN }}>🚕 {result.taxiFare.toLocaleString()}원</div>}
-        {result.tollFare > 0 && <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, marginTop: 2 }}>통행료 {result.tollFare.toLocaleString()}원</div>}
+        {result.taxiFare > 0 && <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_MAIN }}>🚕 {isEn ? `₩${result.taxiFare.toLocaleString()}` : `${result.taxiFare.toLocaleString()}원`}</div>}
+        {result.tollFare > 0 && <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, marginTop: 2 }}>{isEn ? `Toll ₩${result.tollFare.toLocaleString()}` : `통행료 ${result.tollFare.toLocaleString()}원`}</div>}
       </div>
     </div>
     <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
@@ -157,7 +177,7 @@ const RouteResultCard: FC<{
       {([0, 1, 2, 3] as const).map(state => (
         <div key={state} style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <div style={{ width: 20, height: 4, borderRadius: 2, background: TRAFFIC_COLOR_MAP[state] }} />
-          <span style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{["원활", "서행", "정체", "매우정체"][state]}</span>
+          <span style={{ fontSize: 10, color: COLOR_TEXT_SUB }}>{isEn ? TRAFFIC_LABEL_EN[state] : TRAFFIC_LABEL_KO[state]}</span>
         </div>
       ))}
     </div>
@@ -169,7 +189,8 @@ const RouteOptionCard: FC<{
   route:      RecommendedRoute;
   isSelected: boolean;
   onSelect:   () => void;
-}> = ({ route, isSelected, onSelect }) => (
+  isEn?:      boolean;
+}> = ({ route, isSelected, onSelect, isEn = false }) => (
   <div
     onClick={onSelect}
     style={{
@@ -183,8 +204,8 @@ const RouteOptionCard: FC<{
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
       <span style={{ fontSize: 20 }}>{route.emoji}</span>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: isSelected ? COLOR_PRIMARY : COLOR_TEXT_MAIN }}>{route.label}</div>
-        <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, marginTop: 1 }}>{route.description}</div>
+        <div style={{ fontSize: 14, fontWeight: 800, color: isSelected ? COLOR_PRIMARY : COLOR_TEXT_MAIN }}>{isEn ? (ROUTE_LABEL_EN[route.label] ?? route.label) : route.label}</div>
+        <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, marginTop: 1 }}>{isEn ? (ROUTE_DESC_EN[route.description] ?? route.description) : route.description}</div>
       </div>
       {isSelected && (
         <div style={{ width: 20, height: 20, borderRadius: "50%", background: COLOR_PRIMARY, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -196,13 +217,13 @@ const RouteOptionCard: FC<{
     {/* 거리·시간 요약 */}
     <div style={{ display: "flex", gap: 12, marginBottom: 10 }}>
       {route.totalDuration > 0 && (
-        <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_PRIMARY }}>{formatDuration(route.totalDuration)}</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_PRIMARY }}>{formatDuration(route.totalDuration, isEn)}</div>
       )}
       {route.totalDistance > 0 && (
         <div style={{ fontSize: 12, color: COLOR_TEXT_SUB }}>{formatDistance(route.totalDistance)}</div>
       )}
       {route.taxiFare > 0 && (
-        <div style={{ fontSize: 12, color: COLOR_TEXT_SUB }}>🚕 {route.taxiFare.toLocaleString()}원</div>
+        <div style={{ fontSize: 12, color: COLOR_TEXT_SUB }}>🚕 {isEn ? `₩${route.taxiFare.toLocaleString()}` : `${route.taxiFare.toLocaleString()}원`}</div>
       )}
     </div>
 
@@ -673,7 +694,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
   userLat, userLng, isServicesReady, kakaoMapRef, polylineListRef, overlayListRef,
   recRoutes, recIsLoading, recError, recRefetch,
   isNavigating, onStartNavigation, onCancelNavigation,
-  disasterZones, disasterDetourActive = false, navRoute, navIsRecommend = false,
+  disasterZones, disasterDetourActive = false, navRoute, navIsRecommend = false, isEn = false,
 }) => {
   const [panelTab,    setPanelTab]    = useState<"manual" | "recommend">("recommend");
   const [originInput, setOriginInput] = useState<string>("");
@@ -751,6 +772,11 @@ const RoutePanel: FC<RoutePanelProps> = ({
     }
   }, [recRoutes]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const sortedRecRoutes = useMemo(() => [
+    ...recRoutes.filter(r => r.label === "맞춤 코스"),
+    ...recRoutes.filter(r => r.label !== "맞춤 코스"),
+  ], [recRoutes]);
+
   // ── 추천 탭: 코스 선택 토글
   const handleSelectRoute = useCallback((idx: number) => {
     if (selectedRouteIdx === idx) {
@@ -762,7 +788,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
       setRecOriginPlace(null); setRecDestPlace(null);
       return;
     }
-    const route = recRoutes[idx];
+    const route = sortedRecRoutes[idx];
     if (!route) return;
     setSelectedRouteIdx(idx);
     setRecTransportMode("car"); setRecWalkingData(null);
@@ -770,7 +796,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
     setRecOriginPlace({ id: -1, name: "현재 위치", category: "명소", rating: 0, reviews: 0, district: "", lat: userLat, lng: userLng, distance: 0 });
     setRecDestPlace(dest ?? null);
     drawOnMap(route.roads, route.places.slice(0, -1), kakaoMapRef, polylineListRef, overlayListRef);
-  }, [recRoutes, selectedRouteIdx, userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef]);
+  }, [sortedRecRoutes, selectedRouteIdx, userLat, userLng, kakaoMapRef, polylineListRef, overlayListRef]);
 
   // ── 추천 탭: 이동 수단 전환
   const handleRecTransport = useCallback(async (mode: "car" | "walk", route: RecommendedRoute) => {
@@ -884,9 +910,10 @@ const RoutePanel: FC<RoutePanelProps> = ({
   }, [routeState.origin, routeState.destination, onSetResult, onSetError, polylineListRef, overlayListRef, disasterZones]);
 
   const handleUseCurrentLoc = useCallback(() => {
-    onSetOrigin({ label: "현재 위치", lat: userLat, lng: userLng });
-    setOriginInput("현재 위치");
-  }, [userLat, userLng, onSetOrigin]);
+    const label = isEn ? "Current Location" : "현재 위치";
+    onSetOrigin({ label, lat: userLat, lng: userLng });
+    setOriginInput(label);
+  }, [userLat, userLng, onSetOrigin, isEn]);
 
   const handleSwap = useCallback(() => {
     const prevOrigin = originInput;
@@ -914,7 +941,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
   };
 
   const { errorMsg } = routeState;
-  const selectedRoute = selectedRouteIdx !== null ? recRoutes[selectedRouteIdx] : null;
+  const selectedRoute = selectedRouteIdx !== null ? sortedRecRoutes[selectedRouteIdx] : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -934,7 +961,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
               fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s",
             }}
           >
-            {tab === "recommend" ? "⭐ 추천 경로" : "🔍 직접 입력"}
+            {tab === "recommend" ? (isEn ? "Recommended" : "추천 경로") : (isEn ? "Custom Route" : "직접 입력")}
           </button>
         ))}
       </div>
@@ -951,8 +978,8 @@ const RoutePanel: FC<RoutePanelProps> = ({
                 <div style={{ position: "absolute", inset: 0, border: `3px solid ${COLOR_PRIMARY}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
               </div>
               <div style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: COLOR_TEXT_MAIN, marginBottom: 4 }}>경로 후보 분석 중</div>
-                <div style={{ fontSize: 12, color: COLOR_TEXT_SUB }}>Tripadvisor 평점을 수집하고 있어요</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: COLOR_TEXT_MAIN, marginBottom: 4 }}>{isEn ? "AI is generating the optimal route" : "AI가 최적 경로를 생성하고 있어요"}</div>
+                <div style={{ fontSize: 12, color: COLOR_TEXT_SUB }}>{isEn ? "Route recommendation model is analyzing..." : "맞춤 코스 추천 모델이 분석 중입니다..."}</div>
               </div>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
@@ -963,7 +990,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "40px 0" }}>
               <span style={{ fontSize: 36 }}>⚠️</span>
               <span style={{ fontSize: 13, color: "#e53e3e", textAlign: "center" }}>{recError}</span>
-              <button onClick={recRefetch} style={{ padding: "9px 20px", borderRadius: 10, border: `1.5px solid ${COLOR_PRIMARY}`, background: "transparent", color: COLOR_PRIMARY, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}>다시 시도</button>
+              <button onClick={recRefetch} style={{ padding: "9px 20px", borderRadius: 10, border: `1.5px solid ${COLOR_PRIMARY}`, background: "transparent", color: COLOR_PRIMARY, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}>{isEn ? "Retry" : "다시 시도"}</button>
             </div>
           )}
 
@@ -972,21 +999,21 @@ const RoutePanel: FC<RoutePanelProps> = ({
             <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_SUB }}>
-                  현위치 기반 추천 경로 <span style={{ color: COLOR_PRIMARY }}>{recRoutes.length}개</span>
+                  {isEn ? "Routes near you" : "현위치 기반 추천 경로"} <span style={{ color: COLOR_PRIMARY }}>{recRoutes.length}{isEn ? "" : "개"}</span>
                 </div>
-                <button onClick={() => { recRefetch(); setSelectedRouteIdx(null); setRecOriginPlace(null); setRecDestPlace(null); }} style={{background: "#3c76ff", color: "#fff", borderRadius: 5, padding: "2px 8px", border: "1.5px solid transparent", cursor: "pointer", fontSize: 12}}>재추천</button>
+                <button onClick={() => { recRefetch(); setSelectedRouteIdx(null); setRecOriginPlace(null); setRecDestPlace(null); }} style={{background: "#3c76ff", color: "#fff", borderRadius: 5, padding: "2px 8px", border: "1.5px solid transparent", cursor: "pointer", fontSize: 12}}>{isEn ? "Refresh" : "재추천"}</button>
               </div>
 
               {/* 코스 유형 배지 */}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {["🏛 명소 탐방", "🍜 맛집 투어", "☀️ 반나절 코스"].map(label => (
+                {(isEn ? ROUTE_BADGE_EN : ROUTE_BADGE_KO).map(label => (
                   <span key={label} style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: COLOR_BG, color: COLOR_TEXT_SUB, border: `1px solid ${COLOR_BORDER}` }}>{label}</span>
                 ))}
               </div>
 
               {/* 후보 카드 — 선택 시 바로 아래 결과 카드 아코디언 표시 */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {recRoutes.map((route, i) => {
+                {sortedRecRoutes.map((route, i) => {
                   // 우회 경로 안내 중이면 label 일치 카드를 선택 상태로 표시
                   // selectedRouteIdx === null 조건을 제거: recRoutes 캐시 복귀 타이밍과 무관하게
                   // isNavigating + 라벨 매칭만으로 navRoute 데이터를 즉시 표시
@@ -1007,6 +1034,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                         route={isNavMatch ? activeRoute : route}
                         isSelected={isSelected}
                         onSelect={() => !isNavMatch && handleSelectRoute(i)}
+                        isEn={isEn}
                       />
                       {isSelected && (
                         <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1025,7 +1053,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                                   fontSize: 12, fontWeight: 700, fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s",
                                 }}
                               >
-                                {mode === "car" ? "🚗 차량" : activeWalkLoading ? "⏳ 계산 중..." : "🚶 도보"}
+                                {mode === "car" ? (isEn ? "🚗 Car" : "🚗 차량") : activeWalkLoading ? (isEn ? "⏳ Calculating..." : "⏳ 계산 중...") : (isEn ? "🚶 Walk" : "🚶 도보")}
                               </button>
                             ))}
                           </div>
@@ -1037,16 +1065,17 @@ const RoutePanel: FC<RoutePanelProps> = ({
                               tollFare:      activeTransport === "car" ? activeRoute.tollFare      : 0,
                               roads:         activeRoute.roads,
                             }}
-                            origin="현재 위치"
-                            dest={activeRoute.places[activeRoute.places.length - 1]?.name ?? "도착"}
+                            origin={isEn ? "Current Location" : "현재 위치"}
+                            dest={activeRoute.places[activeRoute.places.length - 1]?.name ?? (isEn ? "Destination" : "도착")}
                             waypoints={activeRoute.places.slice(0, -1)}
+                            isEn={isEn}
                           />
                           {isNavigating && navRoute?.label === activeRoute.label ? (
                             <button
                               onClick={onCancelNavigation}
                               style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_DANGER, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
                             >
-                              ✕ 안내 취소
+                              {isEn ? "✕ Cancel" : "✕ 안내 취소"}
                             </button>
                           ) : (
                             <button
@@ -1056,7 +1085,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                               }}
                               style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
                             >
-                              🗺 안내 시작
+                              {isEn ? "🗺 Start Navigation" : "🗺 안내 시작"}
                             </button>
                           )}
                         </div>
@@ -1068,8 +1097,10 @@ const RoutePanel: FC<RoutePanelProps> = ({
 
               <div style={{ padding: "10px 14px", background: COLOR_BG, borderRadius: 10, border: `1px solid ${COLOR_BORDER}` }}>
                 <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, lineHeight: 1.6 }}>
-                  💡 경로 카드를 선택하면 지도에 경로가 표시돼요.<br />
-                  평점은 Tripadvisor 기준이며, 매칭되지 않은 장소는 점수 없이 표시돼요.
+                  {isEn
+                    ? <>💡 Select a route card to display it on the map.<br />Ratings are based on Tripadvisor; unmatched places show no score.</>
+                    : <>💡 경로 카드를 선택하면 지도에 경로가 표시돼요.<br />평점은 Tripadvisor 기준이며, 매칭되지 않은 장소는 점수 없이 표시돼요.</>
+                  }
                 </div>
               </div>
             </>
@@ -1097,7 +1128,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                 }
               }}
               isServicesReady={isServicesReady}
-              placeholder="출발지 검색"
+              placeholder={isEn ? "Search origin" : "출발지 검색"}
               dotStyle={{ borderRadius: "50%", background: "#22c55e" }}
               rightSlot={<button onClick={handleUseCurrentLoc} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, padding: 0, flexShrink: 0 }}>📍</button>}
               rowStyle={{ padding: "11px 14px", borderBottom: `1px solid ${COLOR_BORDER}` }}
@@ -1123,7 +1154,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                 }
               }}
               isServicesReady={isServicesReady}
-              placeholder="도착지 검색"
+              placeholder={isEn ? "Search destination" : "도착지 검색"}
               dotStyle={{ borderRadius: 2, background: COLOR_DEST }}
               rowStyle={{ padding: "11px 14px" }}
               kakaoMapRef={kakaoMapRef}
@@ -1139,14 +1170,14 @@ const RoutePanel: FC<RoutePanelProps> = ({
             disabled={manualLoading}
             style={{ padding: "12px 0", borderRadius: 12, border: "none", background: manualLoading ? COLOR_INACTIVE : COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: manualLoading ? "default" : "pointer", fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s" }}
           >
-            {manualLoading ? "경로 후보 생성 중..." : "🔍 경로 추천받기"}
+            {manualLoading ? (isEn ? "Finding routes..." : "경로 후보 생성 중...") : (isEn ? "🔍 Find Routes" : "🔍 경로 추천받기")}
           </button>
 
           {/* 직접 입력 — 로딩 */}
           {manualLoading && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "20px 0", color: COLOR_TEXT_SUB }}>
               <div style={{ width: 28, height: 28, border: `3px solid ${COLOR_PRIMARY}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-              <span style={{ fontSize: 13 }}>Tripadvisor 평점으로 경로 후보 생성 중...</span>
+              <span style={{ fontSize: 13 }}>{isEn ? "Generating route suggestions..." : "경로 추천 모델로후보 생성 중..."}</span>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           )}
@@ -1160,7 +1191,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
           {!manualLoading && manualRoutes.length > 0 && (
             <>
               <div style={{ fontSize: 13, fontWeight: 700, color: COLOR_TEXT_SUB, display: "flex", alignItems: "center", gap: 8 }}>
-                <span>추천 경로 <span style={{ color: COLOR_PRIMARY }}>{manualRoutes.length}개</span></span>
+                <span>{isEn ? "Routes" : "추천 경로"} <span style={{ color: COLOR_PRIMARY }}>{manualRoutes.length}{isEn ? "" : "개"}</span></span>
                 <button
                   onClick={() => {
                     setManualRoutes([]); setSelectedManualIdx(null);
@@ -1169,13 +1200,13 @@ const RoutePanel: FC<RoutePanelProps> = ({
                     polylineListRef.current = []; overlayListRef.current = [];
                   }}
                   style={{marginLeft: "auto", background: "#3c76ff", color: "#fff", borderRadius: 5, padding: "2px 8px", border: "1.5px solid transparent", cursor: "pointer", fontSize: 12}}>
-                  초기화
+                  {isEn ? "Reset" : "초기화"}
                 </button>
               </div>
 
               {/* 코스 유형 배지 */}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {["🏛 명소 탐방", "🍜 맛집 투어", "☀️ 반나절 코스"].map(label => (
+                {(isEn ? ["🏛 Landmarks Tour", "🍜 Food Tour", "☀️ Half-Day Course"] : ["🏛 명소 탐방", "🍜 맛집 투어", "☀️ 반나절 코스"]).map(label => (
                   <span key={label} style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, background: COLOR_BG, color: COLOR_TEXT_SUB, border: `1px solid ${COLOR_BORDER}` }}>{label}</span>
                 ))}
               </div>
@@ -1192,6 +1223,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                       route={isManualNavMatch ? activeManualRoute : route}
                       isSelected={isManualNavMatch || selectedManualIdx === i}
                       onSelect={() => !isManualNavMatch && handleSelectManualRoute(i)}
+                      isEn={isEn}
                     />
                     {(isManualNavMatch || selectedManualIdx === i) && (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1210,7 +1242,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                                 fontSize: 12, fontWeight: 700, fontFamily: "'Noto Sans KR', sans-serif", transition: "all 0.18s",
                               }}
                             >
-                              {mode === "car" ? "🚗 차량" : manualWalkLoading ? "⏳ 계산 중..." : "🚶 도보"}
+                              {mode === "car" ? (isEn ? "🚗 Car" : "🚗 차량") : manualWalkLoading ? (isEn ? "⏳ Calculating..." : "⏳ 계산 중...") : (isEn ? "🚶 Walk" : "🚶 도보")}
                             </button>
                           ))}
                         </div>
@@ -1222,16 +1254,17 @@ const RoutePanel: FC<RoutePanelProps> = ({
                             tollFare:      manualTransportMode === "car" ? activeManualRoute.tollFare : 0,
                             roads:         activeManualRoute.roads,
                           }}
-                          origin={routeState.origin?.label ?? "출발"}
-                          dest={routeState.destination?.label ?? "도착"}
+                          origin={routeState.origin?.label ?? (isEn ? "Origin" : "출발")}
+                          dest={routeState.destination?.label ?? (isEn ? "Destination" : "도착")}
                           waypoints={activeManualRoute.places}
+                          isEn={isEn}
                         />
                         {isNavigating && navRoute?.label === activeManualRoute.label ? (
                           <button
                             onClick={onCancelNavigation}
                             style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_DANGER, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
                           >
-                            ✕ 안내 취소
+                            {isEn ? "✕ Cancel" : "✕ 안내 취소"}
                           </button>
                         ) : (
                           <button
@@ -1245,7 +1278,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                             }}
                             style={{ width: "100%", padding: "13px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
                           >
-                            🗺 안내 시작
+                            {isEn ? "🗺 Start Navigation" : "🗺 안내 시작"}
                           </button>
                         )}
                       </div>
@@ -1257,8 +1290,10 @@ const RoutePanel: FC<RoutePanelProps> = ({
 
               <div style={{ padding: "10px 14px", background: COLOR_BG, borderRadius: 10, border: `1px solid ${COLOR_BORDER}` }}>
                 <div style={{ fontSize: 11, color: COLOR_TEXT_SUB, lineHeight: 1.6 }}>
-                  💡 경로 카드를 선택하면 지도에 경로가 표시돼요.<br />
-                  평점은 Tripadvisor 기준이며, 매칭되지 않은 장소는 점수 없이 표시돼요.
+                  {isEn
+                    ? <>💡 Select a route card to display it on the map.<br />Ratings are based on Tripadvisor; unmatched places show no score.</>
+                    : <>💡 경로 카드를 선택하면 지도에 경로가 표시돼요.<br />평점은 Tripadvisor 기준이며, 매칭되지 않은 장소는 점수 없이 표시돼요.</>
+                  }
                 </div>
               </div>
             </>
@@ -1301,17 +1336,20 @@ const RoutePanel: FC<RoutePanelProps> = ({
             onClick={e => e.stopPropagation()}
             style={{ width: "100%", maxWidth: 320, background: COLOR_SURFACE, borderRadius: 20, padding: "24px 20px 20px", boxShadow: "0 12px 36px rgba(0,0,0,0.22)", display: "flex", flexDirection: "column", gap: 16 }}
           >
-            <div style={{ fontSize: 15, fontWeight: 800, color: COLOR_TEXT_MAIN, textAlign: "center" }}>경로를 변경하시겠습니까?</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: COLOR_TEXT_MAIN, textAlign: "center" }}>{isEn ? "Change Route?" : "경로를 변경하시겠습니까?"}</div>
             <div style={{ fontSize: 12, color: COLOR_TEXT_SUB, textAlign: "center", lineHeight: 1.6 }}>
-              현재 <strong style={{ color: COLOR_PRIMARY }}>{navRoute?.label}</strong> 안내가 진행 중입니다.<br />
-              <strong style={{ color: COLOR_TEXT_MAIN }}>{confirmRoute.route.label}</strong>(으)로 변경하면 기존 안내가 취소됩니다.
+              {isEn ? (
+                <>Currently navigating <strong style={{ color: COLOR_PRIMARY }}>{ROUTE_LABEL_EN[navRoute?.label ?? ""] ?? navRoute?.label}</strong>.<br />Switching to <strong style={{ color: COLOR_TEXT_MAIN }}>{ROUTE_LABEL_EN[confirmRoute.route.label] ?? confirmRoute.route.label}</strong> will cancel the current navigation.</>
+              ) : (
+                <>현재 <strong style={{ color: COLOR_PRIMARY }}>{navRoute?.label}</strong> 안내가 진행 중입니다.<br /><strong style={{ color: COLOR_TEXT_MAIN }}>{confirmRoute.route.label}</strong>(으)로 변경하면 기존 안내가 취소됩니다.</>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={() => setConfirmRoute(null)}
                 style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: `1.5px solid ${COLOR_BORDER}`, background: COLOR_SURFACE, color: COLOR_TEXT_SUB, fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
               >
-                취소
+                {isEn ? "Cancel" : "취소"}
               </button>
               <button
                 onClick={() => {
@@ -1322,7 +1360,7 @@ const RoutePanel: FC<RoutePanelProps> = ({
                 }}
                 style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: COLOR_PRIMARY, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Noto Sans KR', sans-serif" }}
               >
-                변경
+                {isEn ? "Change" : "변경"}
               </button>
             </div>
           </div>

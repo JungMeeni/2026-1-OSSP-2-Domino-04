@@ -1,4 +1,4 @@
-export type Tab = "nearby" | "route";
+export type Tab = "nearby" | "route" | "favorites";
 export type TransportMode = "car" | "walk" | "transit";
 export type Category = "카페" | "갤러리" | "공원" | "명소" | "문화" | "거리" | "식당";
 
@@ -17,6 +17,7 @@ export type Place = Omit<PlaceData, "latOffset" | "lngOffset"> & {
   lat:      number;
   lng:      number;
   distance: number;
+  address?: string; // 도로명/지번 전체 주소
 };
 
 export type UserLocation = {

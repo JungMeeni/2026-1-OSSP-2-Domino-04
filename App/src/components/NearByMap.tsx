@@ -34,6 +34,7 @@ interface NearbyMapProps {
   radiusMeter:       number;
   selectedPlace:     Place | null;
   onSelectPlace:     (place: Place | null) => void;
+  onDetailPlace?:    (place: Place) => void;
   selectedRadiusIdx: number;
   onSelectRadius:    (idx: number) => void;
   kakaoMapRef:       React.MutableRefObject<KakaoMapInstance | null>;
@@ -43,7 +44,7 @@ interface NearbyMapProps {
 
 const NearbyMap: FC<NearbyMapProps> = ({
   userLat, userLng, locLabel,
-  radiusMeter, selectedPlace, onSelectPlace,
+  radiusMeter, selectedPlace, onSelectPlace, onDetailPlace,
   kakaoMapRef, isMapReady,
   placeList,
 }) => {
@@ -95,6 +96,7 @@ const NearbyMap: FC<NearbyMapProps> = ({
             isDeemphasized={isDeemphasized}
             kakaoMapRef={kakaoMapRef}
             onSelectPlace={onSelectPlace}
+            onDetailPlace={onDetailPlace}
           />
         );
       })}

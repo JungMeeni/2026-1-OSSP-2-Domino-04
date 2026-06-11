@@ -33,6 +33,8 @@ interface PlaceCardProps {
   place:      Place;
   isSelected: boolean;
   onSelect:   (place: Place) => void;
+  onDetail?:  (place: Place) => void;
+  isEn?:      boolean;
 }
 
 const PlaceCard: FC<PlaceCardProps> = ({ place, isSelected, onSelect }) => {
@@ -50,6 +52,19 @@ const PlaceCard: FC<PlaceCardProps> = ({ place, isSelected, onSelect }) => {
         <span style={{ color: COLOR_PRIMARY, fontWeight: 600 }}>{place.distance}m</span>
       </div>
     </div>
+    {onDetail && (
+      <button
+        onClick={(e) => { e.stopPropagation(); onDetail(place); }}
+        style={{
+          background: "none", border: "none", cursor: "pointer",
+          padding: "4px 2px", color: COLOR_TEXT_SUB, fontSize: 18,
+          lineHeight: 1, flexShrink: 0, display: "flex", alignItems: "center",
+        }}
+        title={isEn ? "Details" : "상세 정보"}
+      >
+        ›
+      </button>
+    )}
   </div>
   );
 };
