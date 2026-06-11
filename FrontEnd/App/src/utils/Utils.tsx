@@ -17,6 +17,7 @@ export const kakaoResultToPlace = (result: KakaoPlaceSearchResult): Place => ({
   rating:   0,
   reviews:  0,
   district: result.address_name,
+  address:  result.road_address_name || result.address_name,
   lat:      Number(result.y),
   lng:      Number(result.x),
   distance: Number(result.distance),
@@ -40,8 +41,9 @@ export const toPlace = (placeData: PlaceData, userLat: number, userLng: number):
 });
 
 /* 초 → "N시간 M분" 또는 "M분" 포맷 */
-export const formatDuration = (sec: number): string => {
+export const formatDuration = (sec: number, isEn = false): string => {
   const min = Math.ceil(sec / 60);
+  if (isEn) return min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${min}m`;
   return min >= 60 ? `${Math.floor(min / 60)}시간 ${min % 60}분` : `${min}분`;
 };
 

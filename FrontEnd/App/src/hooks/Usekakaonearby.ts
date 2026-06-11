@@ -79,13 +79,14 @@ interface KakaoPlaceItem {
   place_name:          string;
   category_group_code: string;
   address_name:        string;
+  road_address_name?:  string;
   x:                   string;   // 경도
   y:                   string;   // 위도
   distance:            string;   // 미터
 }
 
 interface TaSearchResponse {
-  data?:  { location_id: string; name: string }[];
+  data?:  { location_id: string; name: string; distance?: string }[];
   error?: { message: string };
 }
 
@@ -93,6 +94,24 @@ interface TaDetailResponse {
   rating?:      string;
   num_reviews?: string;
   error?:       { message: string };
+}
+
+export interface TaFullDetail {
+  name?:         string;
+  description?:  string;
+  web_url?:      string;
+  address_obj?:  { address_string?: string; street1?: string; city?: string };
+  phone?:        string;
+  website?:      string;
+  rating?:       string;
+  num_reviews?:  string;
+  ranking_data?: { ranking_string?: string };
+  price_level?:  string;
+  hours?:        { weekday_text?: string[] };
+  category?:     { localized_name?: string };
+  subcategory?:  { localized_name?: string }[];
+  latitude?:     string;
+  longitude?:    string;
 }
 
 // ── [UTIL] ────────────────────────────────────────────────
@@ -114,19 +133,43 @@ export const fetchTaLocationId = async (
   placeName: string,
   lat:       number,
   lng:       number,
+  language = "ko",
 ): Promise<string | null> => {
   try {
     const params = new URLSearchParams({
       searchQuery: placeName,
       latLong:     `${lat},${lng}`,
-      language:    "ko",
+      language,
     });
     const res  = await fetch(`${_TA_BASE}/search?${params}`, {
       headers: { accept: "application/json" },
     });
     if (!res.ok) return null;
     const json: TaSearchResponse = await res.json();
-    return json.data?.[0]?.location_id ?? null;
+    const results = json.data ?? [];
+    if (results.length === 0) return null;
+
+    // 이름 정규화: 공백·특수문자 제거 후 소문자 비교
+    const norm = (s: string) => s.toLowerCase().replace(/[\s\-_.·]/g, "");
+    const kakaoNorm = norm(placeName);
+
+    // 1순위: 이름이 포함 관계인 결과
+    for (const r of results) {
+      const taNorm = norm(r.name);
+      if (taNorm.includes(kakaoNorm) || kakaoNorm.includes(taNorm)) {
+        return r.location_id;
+      }
+    }
+
+    // 2순위: distance가 있으면 가장 가까운 것 (단위 불명확하므로 NaN 체크만)
+    for (const r of results) {
+      if (r.distance !== undefined && !isNaN(parseFloat(r.distance))) {
+        return r.location_id;
+      }
+    }
+
+    // 3순위: 첫 번째 결과
+    return results[0].location_id;
   } catch {
     return null;
   }
@@ -134,9 +177,10 @@ export const fetchTaLocationId = async (
 
 export const fetchTaDetail = async (
   locationId: string,
+  language = "ko",
 ): Promise<{ rating: number; reviews: number } | null> => {
   try {
-    const res = await fetch(`${_TA_BASE}/details/${locationId}`, {
+    const res = await fetch(`${_TA_BASE}/details/${locationId}?language=${language}`, {
       headers: { accept: "application/json" },
     });
     if (!res.ok) return null;
@@ -145,6 +189,32 @@ export const fetchTaDetail = async (
       rating:  parseFloat(json.rating      ?? "0"),
       reviews: parseInt(json.num_reviews   ?? "0", 10),
     };
+  } catch {
+    return null;
+  }
+};
+
+export const fetchTaFullDetail = async (
+  locationId: string,
+  language = "ko",
+): Promise<TaFullDetail | null> => {
+  const cacheKey = `ta_full_${locationId}_${language}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) {
+    try {
+      const { data, ts } = JSON.parse(cached);
+      if (Date.now() - ts < 7 * 24 * 60 * 60 * 1000) return data as TaFullDetail;
+    } catch {}
+    localStorage.removeItem(cacheKey);
+  }
+  try {
+    const res = await fetch(`${_TA_BASE}/details/${locationId}?language=${language}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const json = await res.json() as TaFullDetail;
+    localStorage.setItem(cacheKey, JSON.stringify({ data: json, ts: Date.now() }));
+    return json;
   } catch {
     return null;
   }
@@ -322,6 +392,7 @@ export const useKakaoNearby = ({
           rating:   detail?.rating  ?? 0,
           reviews:  detail?.reviews ?? 0,
           district: item.address_name.split(" ").slice(0, 2).join(" "),
+          address:  item.road_address_name || item.address_name,
           lat:      parseFloat(item.y),
           lng:      parseFloat(item.x),
           distance: parseInt(item.distance, 10),

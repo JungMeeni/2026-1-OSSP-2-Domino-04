@@ -36,19 +36,27 @@ const DST_ICON: Record<DisasterType, string> = {
 
 // ── [TYPE] ────────────────────────────────────────────────
 
+const DST_NAME_EN: Record<DisasterType, string> = {
+  호우:     "Heavy Rain",
+  교통통제: "Traffic Control",
+  긴급재난: "Emergency",
+};
+
 interface DisasterStatusChipProps {
   activeAlerts: DisasterAlert[];
   alertQueue:   DisasterAlert[];
+  isEn?:        boolean;
 }
 
 interface DisasterHistorySheetProps {
   alertQueue: DisasterAlert[];
   onClose:    () => void;
+  isEn?:      boolean;
 }
 
 // ── [SUB] DisasterHistorySheet ────────────────────────────
 
-const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClose }) => (
+const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClose, isEn = false }) => (
   <div
     onClick={onClose}
     style={{
@@ -75,7 +83,7 @@ const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClo
 
       {/* 헤더 */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div style={{ fontSize: 16, fontWeight: 800, color: COLOR_TEXT_MAIN }}>재난 알림 현황</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: COLOR_TEXT_MAIN }}>{isEn ? "Disaster Alerts" : "재난 알림 현황"}</div>
         <button
           onClick={onClose}
           style={{ background: "none", border: "none", fontSize: 16, color: COLOR_TEXT_SUB, cursor: "pointer" }}
@@ -86,7 +94,7 @@ const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClo
       {alertQueue.length === 0
         ? (
           <div style={{ textAlign: "center", color: COLOR_TEXT_SUB, fontSize: 13, padding: "32px 0" }}>
-            현재 활성 재난 알림이 없어요
+            {isEn ? "No active disaster alerts" : "현재 활성 재난 알림이 없어요"}
           </div>
         )
         : alertQueue.map(alert => {
@@ -109,7 +117,7 @@ const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClo
                   padding: "2px 8px", borderRadius: 20,
                 }}>
                   <span>{DST_ICON[alert.dstSeNm]}</span>
-                  <span>{alert.dstSeNm}</span>
+                  <span>{isEn ? DST_NAME_EN[alert.dstSeNm] : alert.dstSeNm}</span>
                 </div>
                 <span style={{ fontSize: 11, color: COLOR_TEXT_SUB }}>{alert.crtDt}</span>
               </div>
@@ -143,7 +151,7 @@ const DisasterHistorySheet: FC<DisasterHistorySheetProps> = ({ alertQueue, onClo
 
 // ── [MAIN] DisasterStatusChip ─────────────────────────────
 
-const DisasterStatusChip: FC<DisasterStatusChipProps> = ({ activeAlerts, alertQueue }) => {
+const DisasterStatusChip: FC<DisasterStatusChipProps> = ({ activeAlerts, alertQueue, isEn = false }) => {
   const [isSheetOpen, setIsSheetOpen] = useState<boolean>(false);
 
   // [LOGIC] 활성 재난 없으면 렌더 안 함
@@ -198,7 +206,7 @@ const DisasterStatusChip: FC<DisasterStatusChipProps> = ({ activeAlerts, alertQu
           flexShrink: 0,
         }}>
           <span>{DST_ICON[topAlert.dstSeNm]}</span>
-          <span>{topAlert.dstSeNm}</span>
+          <span>{isEn ? DST_NAME_EN[topAlert.dstSeNm] : topAlert.dstSeNm}</span>
         </div>
 
         {/* 요약 or 건수 */}
@@ -214,7 +222,7 @@ const DisasterStatusChip: FC<DisasterStatusChipProps> = ({ activeAlerts, alertQu
           )
           : (
             <span style={{ fontSize: 11, fontWeight: 700, color: color.main }}>
-              {activeAlerts.length}건 발생
+              {isEn ? `${activeAlerts.length} alerts` : `${activeAlerts.length}건 발생`}
             </span>
           )
         }
@@ -228,6 +236,7 @@ const DisasterStatusChip: FC<DisasterStatusChipProps> = ({ activeAlerts, alertQu
         <DisasterHistorySheet
           alertQueue={alertQueue}
           onClose={() => setIsSheetOpen(false)}
+          isEn={isEn}
         />
       )}
     </>

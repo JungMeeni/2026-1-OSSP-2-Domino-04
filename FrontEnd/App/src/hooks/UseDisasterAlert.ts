@@ -58,7 +58,7 @@ const penaltyToType = (penalty: number): DisasterType => {
 };
 
 // [CONFIG] Mock 알림 데이터 — useMock=true 시에만 사용
-const MOCK_ALERTS: Omit<DisasterAlert, "receivedAt">[] = [
+const MOCK_ALERTS_KO: Omit<DisasterAlert, "receivedAt">[] = [
   {
     id:         "mock-1",
     dstSeNm:    "교통통제",
@@ -91,17 +91,110 @@ const MOCK_ALERTS: Omit<DisasterAlert, "receivedAt">[] = [
     radiusM:    350,
     rcptnRgnNm: "서울특별시 용산구 한강로동",
     crtDt:      "2025-05-18 20:33",
-  }, {
-  "id": "mock-4",
-  "dstSeNm": "긴급재난",
-  "msgCn": "[기상청] 오늘 16시 30분 성북구 보문동 일대 시간당 75mm 이상 강한 비로 성북천 범람 위험. 성북천교 지하차도 진입을 금지하고 인근 주민들은 안전한 곳으로 대피 바랍니다.",
-  "summary": "성북구 보문동 성북천 범람 위험 — 지하차도 진입 금지 및 대피 요망",
-  "lat": 37.5855,
-  "lng": 127.0224,
-  "radiusM": 400,
-  "rcptnRgnNm": "서울특별시 성북구 보문동",
-  "crtDt": "2026-06-05 16:32"
-}
+  },
+  {
+    id:         "mock-4",
+    dstSeNm:    "긴급재난",
+    msgCn:      "[기상청] 오늘 16시 30분 성북구 보문동 일대 시간당 75mm 이상 강한 비로 성북천 범람 위험. 성북천교 지하차도 진입을 금지하고 인근 주민들은 안전한 곳으로 대피 바랍니다.",
+    summary:    "성북구 보문동 성북천 범람 위험 — 지하차도 진입 금지 및 대피 요망",
+    lat:        37.5855,
+    lng:        127.0224,
+    radiusM:    400,
+    rcptnRgnNm: "서울특별시 성북구 보문동",
+    crtDt:      "2026-06-05 16:32",
+  },
+  {
+    id:         "mock-5",
+    dstSeNm:    "교통통제",
+    msgCn:      "[중구청] 동국대학교 정문 앞 퇴계로 3가 교차로 지하 공사 확대로 인해 동국대입구 방향 전 차선 통제 중입니다. 장충단로 또는 남산순환로로 우회하시기 바랍니다.",
+    summary:    "퇴계로 3가 교차로 전 차선 통제 — 장충단로 우회 요망",
+    lat:        37.5572,
+    lng:        127.0058,
+    radiusM:    450,
+    rcptnRgnNm: "서울특별시 중구 장충동1가",
+    crtDt:      "2026-06-11 10:15",
+  },
+  {
+    id:         "mock-6",
+    dstSeNm:    "긴급재난",
+    msgCn:      "[기상청] 오늘 09시 40분 중구 필동 일대 시간당 80mm 이상 강한 비로 필동천 역류 및 동국대학교 후문 진입로 침수 발생. 해당 구간 접근 금지 및 인근 주민·학생은 즉시 안전한 곳으로 대피 바랍니다.",
+    summary:    "필동 필동천 역류 — 동국대 후문 침수, 즉시 대피",
+    lat:        37.5601,
+    lng:        126.9988,
+    radiusM:    380,
+    rcptnRgnNm: "서울특별시 중구 필동2가",
+    crtDt:      "2026-06-11 09:42",
+  },
+];
+
+// [CONFIG] Mock 알림 데이터 (English) — useMock=true + isEn=true 시에만 사용
+const MOCK_ALERTS_EN: Omit<DisasterAlert, "receivedAt">[] = [
+  {
+    id:         "mock-1",
+    dstSeNm:    "교통통제",
+    msgCn:      "[Yongsan-gu] Road construction in front of Ichon Station Exit 1 — traffic control in effect toward Yongsan Station. Please use an alternate route.",
+    summary:    "Ichon Station road works — Yongsan direction blocked",
+    lat:        37.5176,
+    lng:        126.9688,
+    radiusM:    400,
+    rcptnRgnNm: "Ichon-dong, Yongsan-gu, Seoul",
+    crtDt:      "2025-05-18 14:26",
+  },
+  {
+    id:         "mock-2",
+    dstSeNm:    "호우",
+    msgCn:      "[MOIS] Heavy rain warning issued for Yongsan-gu. Han River water level rising — riverside walking paths closed. Please stay indoors and exercise caution.",
+    summary:    "Yongsan-gu heavy rain warning — riverside paths closed",
+    lat:        37.5219,
+    lng:        126.9647,
+    radiusM:    800,
+    rcptnRgnNm: "Yongsan-gu, Seoul (entire district)",
+    crtDt:      "2025-05-18 20:30",
+  },
+  {
+    id:         "mock-3",
+    dstSeNm:    "긴급재난",
+    msgCn:      "[KMA] Rainfall exceeding 70 mm/h near Yongsan Railway High School — immediate evacuation required. Do NOT enter underpasses or underground roads.",
+    summary:    "Yongsan Railway HS flooding — evacuate immediately",
+    lat:        37.5243,
+    lng:        126.9615,
+    radiusM:    350,
+    rcptnRgnNm: "Hangangno-dong, Yongsan-gu, Seoul",
+    crtDt:      "2025-05-18 20:33",
+  },
+  {
+    id:         "mock-4",
+    dstSeNm:    "긴급재난",
+    msgCn:      "[KMA] As of 16:30 today, rainfall exceeding 75 mm/h in Bomun-dong, Seongbuk-gu — Seongbuk Stream overflow risk. Entry to Seongbukcheon underpass is prohibited. Nearby residents please evacuate to a safe location immediately.",
+    summary:    "Bomun-dong flooding risk — underpass entry banned, evacuate now",
+    lat:        37.5855,
+    lng:        127.0224,
+    radiusM:    400,
+    rcptnRgnNm: "Bomun-dong, Seongbuk-gu, Seoul",
+    crtDt:      "2026-06-05 16:32",
+  },
+  {
+    id:         "mock-5",
+    dstSeNm:    "교통통제",
+    msgCn:      "[Jung-gu Office] Underground construction at Toegye-ro 3-ga intersection near Dongguk University main gate — all lanes closed toward Dongguk University entrance. Please use Jangchungdan-ro or Namsan Loop Road as alternate routes.",
+    summary:    "Toegye-ro 3-ga full road closure — divert via Jangchungdan-ro",
+    lat:        37.5572,
+    lng:        127.0058,
+    radiusM:    450,
+    rcptnRgnNm: "Jangchung-dong 1-ga, Jung-gu, Seoul",
+    crtDt:      "2026-06-11 10:15",
+  },
+  {
+    id:         "mock-6",
+    dstSeNm:    "긴급재난",
+    msgCn:      "[KMA] As of 09:40 today, rainfall exceeding 80 mm/h in Pil-dong, Jung-gu — Pildong Stream overflow and flooding at Dongguk University rear gate access road. Area is prohibited. Students and residents nearby please evacuate to safety immediately.",
+    summary:    "Pildong Stream overflow — DGU rear gate flooded, evacuate now",
+    lat:        37.5601,
+    lng:        126.9988,
+    radiusM:    380,
+    rcptnRgnNm: "Pil-dong 2-ga, Jung-gu, Seoul",
+    crtDt:      "2026-06-11 09:42",
+  },
 ];
 
 // ── [HOOK] ────────────────────────────────────────────────
@@ -115,7 +208,7 @@ interface UseDisasterAlertReturn {
   dismissAll:     () => void;
 }
 
-export const useDisasterAlert = (useMock = true): UseDisasterAlertReturn => {
+export const useDisasterAlert = (useMock = true, isEn = false): UseDisasterAlertReturn => {
   const [alertQueue,   setAlertQueue]   = useState<DisasterAlert[]>([]);
   const [remainingSec, setRemainingSec] = useState<number>(0);
   const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -133,11 +226,12 @@ export const useDisasterAlert = (useMock = true): UseDisasterAlertReturn => {
   // [CONFIG] Mock 데이터 로드 (useMock=true)
   useEffect(() => {
     if (!useMock) return;
-    const timers = MOCK_ALERTS.map((alert, i) =>
+    const alerts = isEn ? MOCK_ALERTS_EN : MOCK_ALERTS_KO;
+    const timers = alerts.map((alert, i) =>
       setTimeout(() => pushAlert(alert), 15000 + i * 3000)
     );
     return () => timers.forEach(clearTimeout);
-  }, [useMock, pushAlert]);
+  }, [useMock, isEn, pushAlert]);
 
   // [API] 실제 폴링 (useMock=false)
   useEffect(() => {

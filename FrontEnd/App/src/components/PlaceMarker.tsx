@@ -49,13 +49,14 @@ interface PlaceMarkerProps {
   isDeemphasized: boolean;
   kakaoMapRef:    React.MutableRefObject<KakaoMapInstance | null>;
   onSelectPlace:  (place: Place | null) => void;
+  onDetailPlace?: (place: Place) => void;
   pinColor?:      string;
   hideCategoryIcon?: boolean;
 }
 
 const PlaceMarker: FC<PlaceMarkerProps> = ({
   place, isSelected, isActive, isDeemphasized,
-  kakaoMapRef, onSelectPlace, pinColor, hideCategoryIcon = false,
+  kakaoMapRef, onSelectPlace, onDetailPlace, pinColor, hideCategoryIcon = false,
 }) => {
   const overlayRef = useRef<KakaoOverlay | null>(null);
   const markerRef  = useRef<KakaoMarker  | null>(null);
@@ -141,6 +142,7 @@ const PlaceMarker: FC<PlaceMarkerProps> = ({
       markerRef.current.setMap(kakaoMapRef.current);
       window.kakao.maps.event.addListener(markerRef.current, "click", () => {
         onSelectPlace(isSelected ? null : place);
+        if (onDetailPlace) onDetailPlace(place);
       });
     }
 
@@ -148,7 +150,7 @@ const PlaceMarker: FC<PlaceMarkerProps> = ({
       overlayRef.current?.setMap(null);
       markerRef.current?.setMap(null);
     };
-  }, [place, isSelected, isActive, isDeemphasized, kakaoMapRef, onSelectPlace, displayRating, pinColor, hideCategoryIcon]);
+  }, [place, isSelected, isActive, isDeemphasized, kakaoMapRef, onSelectPlace, onDetailPlace, displayRating, pinColor, hideCategoryIcon]);
 
   return null;
 };
