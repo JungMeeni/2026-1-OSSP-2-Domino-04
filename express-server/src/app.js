@@ -42,7 +42,8 @@ const allowedOrigins = [
   process.env.BACKEND_URL, // API 서버 자체에서의 테스트용
   process.env.FRONTEND_URL, // 프로덕션 프론트엔드 주소 (.env에서 로드)
   'https://idfriend.kr',
-  'http://idfriend.kr'
+  'http://idfriend.kr',
+  'https://lin-k.site',
 ];
 
 app.use(cors({
