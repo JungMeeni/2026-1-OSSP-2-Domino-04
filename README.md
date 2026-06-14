@@ -6,6 +6,9 @@
 <p align="center">
   <a href="https://lin-k.site/"><b>🔗 서비스 바로가기 (lin-k.site)</b></a>
 </p>
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=gitc2EZzw1U"><b>🔗 시연영상 바로가기 (youtube)</b></a>
+</p>
 
 **팀명**: Domino-04  
 **팀장**: 고태현  
