@@ -257,8 +257,6 @@ final_score = (nn_quality × rating_score × cat_weight) + (award_count × 0.5)
 
 ## 🚨 실시간 재난 파이프라인 상세
 
-> FastAPI 백엔드 (`정덕원` 담당) · 모듈별 책임 분리(router는 HTTP만, 로직은 service)
-
 ### 백그라운드 폴링 스케줄러 (`scheduler.py`)
 
 - FastAPI `lifespan` 훅으로 서버 기동 시 폴링 시작, 핫스팟을 주기적으로 순회
@@ -410,8 +408,8 @@ final_score = (nn_quality × rating_score × cat_weight) + (award_count × 0.5)
 
 | 이름 | 담당 |
 |---|---|
-| **고태현** | 프론트엔드 UI, 경로 추천 모델(MLP·TSP) 설계, 알고리즘 검증, 서비스 배포 |
-| **장효준** | 프론트엔드 UI, 동적 반응형 가이드, 재난 데이터 파이프라인 |
+| **고태현** | 프론트엔드 UI, 경로 추천 모델(MLP·TSP) 설계, 실시간 재난 안전 파이프라인 구현, 서비스 배포 |
+| **장효준** | 프론트엔드 UI, 동적 반응형 가이드 |
 | **정덕원** | 동적 반응형 가이드, FastAPI 백엔드 (폴링·Gemini·안전 판정·캐싱) |
 | **차정민** | 동적 반응형 가이드, LLM·API 연동, 실시간 도시데이터 |
 
